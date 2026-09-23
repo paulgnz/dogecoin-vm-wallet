@@ -29,6 +29,8 @@ final class AppModel {
         api = API(base: saved ?? Self.defaultServer)
         address = UserDefaults.standard.string(forKey: "address")
         if address != nil && !Vault.hasKey { address = nil }
+        loadWithdrawals()
+        Notifier.requestPermission()
         Task { await refreshLoop() }
     }
 
@@ -53,7 +55,11 @@ final class AppModel {
         guard let address else { return }
         if let v = try? await api.address(address, on: .dogecoinvm) { vm = v }
         await refreshDogecoin(address)
-        if let d = try? await api.deposits(for: address) { deposits = d }
+        if let d = try? await api.deposits(for: address) {
+            deposits = d
+            noticeDeposits()
+        }
+        await refreshWithdrawals()
     }
 
     private func refreshDogecoin(_ address: String) async {
@@ -101,6 +107,8 @@ final class AppModel {
         try Vault.store(keyHex: key)
         UserDefaults.standard.set(addr, forKey: "address")
         address = addr
+        loadWithdrawals()
+        knownDepositStatus = nil
         Task { await refresh() }
     }
 
@@ -118,26 +126,29 @@ final class AppModel {
         vm = nil
         doge = nil
         deposits = []
+        withdrawals = []
+        knownDepositStatus = nil
     }
 
     private func unlock(reason: String) async throws -> String {
         try await Task.detached { try Vault.load(reason: reason) }.value
     }
 
-    // MARK: Payments
+    // MARK: Payments: review, then sign exactly what was reviewed
 
-    /// Sends DOGE on either network.
-    func send(to destination: String, amount: String, on network: Network) async throws -> String {
+    /// The payment waiting for review, shown as a sheet.
+    var review: PendingPayment?
+
+    /// Prepares a payment on either network for review.
+    func prepareSend(to destination: String, amount: String, on network: Network) async throws {
         try Core.checkAddress(destination)
-        let koinu = try Core.koinu(amount)
-        return try await pay(on: network, to: destination, koinu: koinu,
-                             reason: "send \(amount) DOGE on \(network.name)")
+        review = try await plan(.send, on: network, to: destination, koinu: try Core.koinu(amount))
     }
 
-    /// Moves DOGE from the Dogecoin balance to DogecoinVM: pays the personal
-    /// deposit address, derived here from the signers' keys and checked
-    /// against what the bridge says.
-    func moveIn(amount: String) async throws -> String {
+    /// Prepares a move from the Dogecoin balance to DogecoinVM: a payment to
+    /// the personal deposit address, derived here from the signers' keys and
+    /// checked against what the bridge says.
+    func prepareMoveIn(amount: String) async throws {
         guard let info, let address else { throw CoreError(message: "The bridge isn't connected yet.") }
         let koinu = try Core.koinu(amount)
         let min = try Core.koinu(info.minDeposit), max = try Core.koinu(info.maxDeposit)
@@ -150,27 +161,25 @@ final class AppModel {
         guard told == expected else {
             throw CoreError(message: "The bridge gave a deposit address that doesn't match the peg signers, so nothing was sent.")
         }
-        return try await pay(on: .dogecoin, to: expected, koinu: koinu,
-                             reason: "move \(amount) DOGE to DogecoinVM")
+        depositAddress = expected
+        review = try await plan(.moveIn, on: .dogecoin, to: expected, koinu: koinu)
     }
 
-    /// Withdraws DOGE from DogecoinVM to a Dogecoin address (the wallet's own,
-    /// by default).
-    func withdraw(to destination: String, amount: String) async throws -> String {
+    /// Prepares a withdrawal from DogecoinVM to a Dogecoin address.
+    func prepareWithdraw(to destination: String, amount: String) async throws {
         guard let info else { throw CoreError(message: "The bridge isn't connected yet.") }
         try Core.checkAddress(destination)
         let koinu = try Core.koinu(amount)
         if koinu < (try Core.koinu(info.minPegOut)) {
             throw CoreError(message: "The smallest withdrawal is \(formatDoge(info.minPegOut)) DOGE.")
         }
-        return try await pay(on: .dogecoinvm, to: info.reserveAddress, koinu: koinu,
-                             data: try Core.pegOutData(to: destination),
-                             reason: "withdraw \(amount) DOGE to Dogecoin")
+        review = try await plan(.withdraw, on: .dogecoinvm, to: info.reserveAddress, koinu: koinu,
+                                data: try Core.pegOutData(to: destination), withdrawalTo: destination)
     }
 
-    private func pay(on network: Network, to destination: String, koinu: UInt64,
-                     data: String? = nil, reason: String) async throws -> String {
-        guard let view = network == .dogecoin ? doge : vm else {
+    private func plan(_ kind: PendingPayment.Kind, on network: Network, to destination: String, koinu: UInt64,
+                      data: String? = nil, withdrawalTo: String? = nil) async throws -> PendingPayment {
+        guard let address, let view = network == .dogecoin ? doge : vm else {
             throw CoreError(message: "Your \(network.name) balance hasn't loaded yet.")
         }
         let utxos = view.utxos.filter { $0.confirmations > 0 }
@@ -178,10 +187,26 @@ final class AppModel {
         for txid in Set(utxos.map(\.txid)) {
             raw[txid] = try await api.rawTx(txid, on: network)
         }
-        let key = try await unlock(reason: reason)
-        let payment = try Core.buildPayment(key: key, utxos: utxos, rawTxs: raw,
-                                            to: destination, koinu: koinu, data: data)
-        let txid = try await api.broadcast(payment.hex, on: network)
+        let plan = try Core.planPayment(from: address, utxos: utxos, rawTxs: raw, to: destination, koinu: koinu, data: data)
+        return PendingPayment(kind: kind, network: network, to: destination, koinu: koinu, data: data,
+                              withdrawalTo: withdrawalTo, utxos: utxos, rawTxs: raw, plan: plan)
+    }
+
+    /// Signs the reviewed payment after Touch ID, checks the signed
+    /// transaction says exactly what was reviewed, and sends it.
+    func confirm(_ p: PendingPayment) async throws -> String {
+        let key = try await unlock(reason: p.touchIDReason)
+        let payment = try Core.buildPayment(key: key, utxos: p.utxos, rawTxs: p.rawTxs, to: p.to,
+                                            koinu: p.koinu, data: p.data)
+        let signed = try Core.decodeTx(payment.hex)
+        guard signed.outputs == p.plan.outputs, payment.fee == p.plan.fee, signed.txid == payment.txid else {
+            throw CoreError(message: "The signed transaction didn't match what you reviewed, so it wasn't sent.")
+        }
+        if let to = p.withdrawalTo {
+            // Recorded before sending, so it is tracked even if the answer is lost.
+            track(Withdrawal(txid: payment.txid, to: to, amount: String(p.koinu), time: Date(), status: "sending"))
+        }
+        let txid = try await api.broadcast(payment.hex, on: p.network)
         guard txid == payment.txid else {
             throw CoreError(message: "The bridge reported transaction \(txid), but this wallet signed \(payment.txid).")
         }
@@ -190,6 +215,110 @@ final class AppModel {
             await refresh()
         }
         return txid
+    }
+
+    /// The deposit address last checked against the signers, for labelling
+    /// a review.
+    private(set) var depositAddress: String?
+
+    // MARK: Withdrawals
+
+    struct Withdrawal: Codable, Identifiable, Sendable {
+        let txid: String
+        let to: String
+        let amount: String      // koinu
+        let time: Date
+        var status: String      // sending, pending, paid or unknown
+        var pays: String?
+        var paymentTxid: String?
+        var id: String { txid }
+    }
+
+    private(set) var withdrawals: [Withdrawal] = []
+
+    private var withdrawalsKey: String { "withdrawals.\(address ?? "")" }
+
+    private func loadWithdrawals() {
+        guard let data = UserDefaults.standard.data(forKey: withdrawalsKey),
+              let list = try? JSONDecoder().decode([Withdrawal].self, from: data) else { withdrawals = []; return }
+        withdrawals = list
+    }
+
+    private func saveWithdrawals() {
+        if let data = try? JSONEncoder().encode(Array(withdrawals.prefix(50))) {
+            UserDefaults.standard.set(data, forKey: withdrawalsKey)
+        }
+    }
+
+    private func track(_ w: Withdrawal) {
+        withdrawals.removeAll { $0.txid == w.txid }
+        withdrawals.insert(w, at: 0)
+        saveWithdrawals()
+    }
+
+    /// Checks each unpaid withdrawal with the bridge, and notifies when one
+    /// is paid on Dogecoin.
+    private func refreshWithdrawals() async {
+        for (i, w) in withdrawals.enumerated() where w.status != "paid" {
+            guard let s = try? await api.pegOut(w.txid) else { continue }
+            var updated = w
+            updated.status = s.status == "unknown" && w.status == "sending" ? "sending" : s.status
+            updated.pays = s.pays
+            updated.paymentTxid = s.paymentTxid
+            if i < withdrawals.count, withdrawals[i].txid == w.txid { withdrawals[i] = updated }
+            if s.status == "paid" {
+                Notifier.post(title: "Withdrawal paid",
+                              body: "\(formatDoge(s.pays ?? "")) DOGE is on its way to \(w.to.prefix(8))… on Dogecoin.")
+            }
+        }
+        saveWithdrawals()
+    }
+
+    /// Notifies when a deposit is credited. The first load only records.
+    private var knownDepositStatus: [String: String]?
+
+    private func noticeDeposits() {
+        let now = Dictionary(deposits.map { ($0.id, $0.status) }, uniquingKeysWith: { a, _ in a })
+        if let before = knownDepositStatus {
+            for d in deposits where d.status == "credited" && before[d.id] != "credited" {
+                Notifier.post(title: "Deposit credited",
+                              body: "\(formatDoge(d.credited ?? d.amount)) DOGE is in your DogecoinVM balance.")
+            }
+        }
+        knownDepositStatus = now
+    }
+}
+
+/// A payment prepared for review: what it will do, and everything needed to
+/// sign exactly that.
+struct PendingPayment: Identifiable, Sendable {
+    enum Kind: Sendable { case send, moveIn, withdraw }
+    let id = UUID()
+    let kind: Kind
+    let network: Network
+    let to: String
+    let koinu: UInt64
+    let data: String?
+    let withdrawalTo: String?
+    let utxos: [Utxo]
+    let rawTxs: [String: String]
+    let plan: PaymentPlan
+
+    var title: String {
+        switch kind {
+        case .send: "Send on \(network.name)"
+        case .moveIn: "Move to DogecoinVM"
+        case .withdraw: "Withdraw to Dogecoin"
+        }
+    }
+
+    var touchIDReason: String {
+        let amount = formatDoge(Core.dogeText(koinu))
+        switch kind {
+        case .send: return "send \(amount) DOGE on \(network.name)"
+        case .moveIn: return "move \(amount) DOGE to DogecoinVM"
+        case .withdraw: return "withdraw \(amount) DOGE to Dogecoin"
+        }
     }
 }
 

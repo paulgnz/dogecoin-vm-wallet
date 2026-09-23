@@ -22,7 +22,7 @@ struct MoveInView: View {
                 Text(limits(info)).font(.callout).foregroundStyle(Theme.inkSoft)
             }
             HStack {
-                Button(moving ? "Moving…" : "Move to DogecoinVM") { Task { await move() } }
+                Button(moving ? "Preparing…" : "Review move") { Task { await move() } }
                     .buttonStyle(.borderedProminent).tint(Theme.vm)
                     .disabled(moving || amount.isEmpty || model.doge == nil)
                 Text("Your deposit address is checked against the signers' keys first.")
@@ -42,9 +42,9 @@ struct MoveInView: View {
     private func move() async {
         moving = true
         defer { moving = false }
+        result = nil
         do {
-            let txid = try await model.moveIn(amount: amount)
-            result = .success("Sent to your deposit address. Transaction \(txid.prefix(10))…; it's credited after the confirmations below.")
+            try await model.prepareMoveIn(amount: amount)
             amount = ""
         } catch {
             result = .failure(error)
@@ -102,22 +102,61 @@ struct WithdrawView: View {
                 Button("Use my Dogecoin address") { to = model.address ?? "" }.buttonStyle(.link)
             }
             Field(label: "Amount (DOGE)", text: $amount).frame(maxWidth: 220)
-            Button(sending ? "Withdrawing…" : "Withdraw") { Task { await withdraw() } }
+            Button(sending ? "Preparing…" : "Review withdrawal") { Task { await withdraw() } }
                 .buttonStyle(.borderedProminent).tint(Theme.coin)
                 .disabled(sending || to.isEmpty || amount.isEmpty)
             ResultLine(result: result)
+            WithdrawalList()
         }
     }
 
     private func withdraw() async {
         sending = true
         defer { sending = false }
+        result = nil
         do {
-            let txid = try await model.withdraw(to: to.trimmingCharacters(in: .whitespaces), amount: amount)
-            result = .success("Withdrawal sent in \(txid.prefix(10))…. The bridge pays out once it's in a block.")
+            try await model.prepareWithdraw(to: to.trimmingCharacters(in: .whitespaces), amount: amount)
             amount = ""
         } catch {
             result = .failure(error)
+        }
+    }
+}
+
+struct WithdrawalList: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Your withdrawals").font(.title3.bold())
+            if model.withdrawals.isEmpty {
+                Text("None yet.").foregroundStyle(Theme.inkSoft)
+            }
+            ForEach(model.withdrawals) { w in
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("\(formatDoge(Core.dogeText(UInt64(w.amount) ?? 0))) DOGE to \(w.to.prefix(8))…")
+                        HStack(spacing: 6) {
+                            TxLink(txid: w.txid, network: .dogecoinvm, server: model.server)
+                            if let paid = w.paymentTxid {
+                                Image(systemName: "arrow.right").font(.caption).foregroundStyle(Theme.inkSoft)
+                                TxLink(txid: paid, network: .dogecoin, server: model.server)
+                            }
+                        }
+                    }
+                    Spacer()
+                    Text(status(w)).foregroundStyle(w.status == "paid" ? Theme.vmInk : Theme.inkSoft)
+                }
+                Divider()
+            }
+        }
+    }
+
+    private func status(_ w: AppModel.Withdrawal) -> String {
+        switch w.status {
+        case "paid": "Paid \(formatDoge(w.pays ?? "")) DOGE on Dogecoin"
+        case "pending": "Waiting for the bridge"
+        default: "Waiting for a DogecoinVM block"
         }
     }
 }

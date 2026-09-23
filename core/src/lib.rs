@@ -411,24 +411,42 @@ pub struct Payment {
     pub fee: u64,
 }
 
-/// Spends `key`'s P2PKH outputs to pay `amount` to `script`, with an optional
-/// OP_RETURN. `raw_txs` maps each utxo's txid to the transaction's hex, from
-/// which each input's value and script are taken after checking the hex
-/// hashes to the txid: legacy signatures do not commit to the amounts they
-/// spend, so a server lying about a value could otherwise turn it into fee.
-pub fn build_payment(
-    key: &Key,
+/// What a payment will do, before anything is signed: the inputs it spends
+/// (with values checked against their transactions), its outputs and fee.
+/// The wallet shows this for review, then signs exactly this.
+pub struct Plan {
+    inputs: Vec<([u8; 32], u32, u64)>,
+    outputs: Vec<TxOut>,
+    from_script: Vec<u8>,
+    pub fee: u64,
+    pub total_in: u64,
+}
+
+impl Plan {
+    /// The outputs, in order: (value, script).
+    pub fn outputs(&self) -> Vec<(u64, Vec<u8>)> {
+        self.outputs.iter().map(|o| (o.value, o.script.clone())).collect()
+    }
+}
+
+/// Plans a payment from the P2PKH outputs paying `from_script` (from the
+/// server's utxo list) to `script`, with an optional OP_RETURN. `raw_txs`
+/// maps each utxo's txid to the transaction's hex, from which each input's
+/// value and script are taken after checking the hex hashes to the txid:
+/// legacy signatures do not commit to the amounts they spend, so a server
+/// lying about a value could otherwise turn it into fee.
+pub fn plan_payment(
+    from_script: &[u8],
     utxos: &[Utxo],
     raw_txs: &HashMap<String, String>,
     script: &[u8],
     amount: u64,
     data: Option<&[u8]>,
-) -> Result<Payment> {
+) -> Result<Plan> {
     if amount < HARD_DUST {
         return err(format!("the smallest payment is {} DOGE", format_doge(HARD_DUST)));
     }
-    let from_script = key.destination().pk_script();
-    let from_hex = hex::encode(&from_script);
+    let from_hex = hex::encode(from_script);
     let mut spendable: Vec<(u64, &Utxo)> = utxos
         .iter()
         .filter(|u| u.confirmations > 0 && u.script == from_hex)
@@ -475,17 +493,25 @@ pub fn build_payment(
     }
     let change = total - amount - fee;
     if change >= SOFT_DUST {
-        outputs.push(TxOut { value: change, script: from_script.clone() });
+        outputs.push(TxOut { value: change, script: from_script.to_vec() });
     } else {
         fee += change;
     }
     if fee > MAX_FEE {
         return err(format!("the fee would be {} DOGE; refusing to sign", format_doge(fee)));
     }
+    Ok(Plan { inputs, outputs, from_script: from_script.to_vec(), fee, total_in: total })
+}
 
+/// Signs a plan with the key whose outputs it spends.
+pub fn sign_plan(key: &Key, plan: &Plan) -> Result<Payment> {
+    let from_script = key.destination().pk_script();
+    if from_script != plan.from_script {
+        return err("this key does not own the plan's inputs");
+    }
     let mut tx = Tx {
-        inputs: inputs.iter().map(|(id, vout, _)| TxIn { txid: *id, vout: *vout, script: Vec::new() }).collect(),
-        outputs,
+        inputs: plan.inputs.iter().map(|(id, vout, _)| TxIn { txid: *id, vout: *vout, script: Vec::new() }).collect(),
+        outputs: plan.outputs.iter().map(|o| TxOut { value: o.value, script: o.script.clone() }).collect(),
     };
     let signing = key.signing_key();
     let public = key.public_key();
@@ -498,5 +524,62 @@ pub fn build_payment(
         tx.inputs[i].script = [push_data(&der)?, push_data(&public)?].concat();
     }
     let raw = tx.serialize();
-    Ok(Payment { txid: txid(&raw), hex: hex::encode(raw), fee })
+    Ok(Payment { txid: txid(&raw), hex: hex::encode(raw), fee: plan.fee })
+}
+
+/// Plans and signs in one step.
+pub fn build_payment(
+    key: &Key,
+    utxos: &[Utxo],
+    raw_txs: &HashMap<String, String>,
+    script: &[u8],
+    amount: u64,
+    data: Option<&[u8]>,
+) -> Result<Payment> {
+    let plan = plan_payment(&key.destination().pk_script(), utxos, raw_txs, script, amount, data)?;
+    sign_plan(key, &plan)
+}
+
+/// A transaction's outputs, read back from its bytes: (value, script).
+pub fn decode_outputs(raw: &[u8]) -> Result<Vec<(u64, Vec<u8>)>> {
+    Ok(parse_outputs(raw)?.into_iter().map(|o| (o.value, o.script)).collect())
+}
+
+/// What an output script is, for showing to a person.
+pub enum ScriptKind {
+    Address(Destination),
+    /// An OP_RETURN. A DVMO tag is a DogecoinVM withdrawal to a Dogecoin
+    /// destination.
+    Data { bytes: Vec<u8>, withdrawal_to: Option<Destination> },
+    Other,
+}
+
+pub fn classify_script(script: &[u8]) -> ScriptKind {
+    let mut hash = [0u8; 20];
+    if script.len() == 25 && script[..3] == [0x76, 0xa9, 0x14] && script[23..] == [0x88, 0xac] {
+        hash.copy_from_slice(&script[3..23]);
+        return ScriptKind::Address(Destination { kind: 0, hash });
+    }
+    if script.len() == 23 && script[..2] == [0xa9, 0x14] && script[22] == 0x87 {
+        hash.copy_from_slice(&script[2..22]);
+        return ScriptKind::Address(Destination { kind: 1, hash });
+    }
+    if script.first() == Some(&0x6a) && script.len() >= 2 {
+        let (len, start) = match script[1] {
+            0x4c if script.len() >= 3 => (script[2] as usize, 3),
+            n if n < 0x4c => (n as usize, 2),
+            _ => return ScriptKind::Other,
+        };
+        if script.len() != start + len {
+            return ScriptKind::Other;
+        }
+        let bytes = script[start..].to_vec();
+        let withdrawal_to = (bytes.len() == 25 && &bytes[..4] == b"DVMO" && bytes[4] <= 1).then(|| {
+            let mut h = [0u8; 20];
+            h.copy_from_slice(&bytes[5..25]);
+            Destination { kind: bytes[4], hash: h }
+        });
+        return ScriptKind::Data { bytes, withdrawal_to };
+    }
+    ScriptKind::Other
 }

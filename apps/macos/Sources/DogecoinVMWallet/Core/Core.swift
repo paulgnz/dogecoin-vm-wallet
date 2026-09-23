@@ -44,12 +44,53 @@ enum Core {
         try string(["op": "pegOutData", "address": address], "data")
     }
 
+    /// Koinu as a DOGE decimal string, for formatDoge.
+    static func dogeText(_ koinu: UInt64) -> String {
+        "\(koinu / 100_000_000).\(String(format: "%08llu", koinu % 100_000_000))"
+    }
+
     static func koinu(_ doge: String) throws -> UInt64 {
         guard let k = UInt64(try string(["op": "parseDoge", "text": doge], "koinu")) else { throw CoreError(message: "bad amount") }
         return k
     }
 
     // MARK: Payments
+
+    /// Plans a payment for review: nothing is signed.
+    static func planPayment(from: String, utxos: [Utxo], rawTxs: [String: String],
+                            to address: String, koinu: UInt64, data: String? = nil) throws -> PaymentPlan {
+        var req = paymentRequest("planPayment", utxos: utxos, rawTxs: rawTxs, to: address, koinu: koinu, data: data)
+        req["fromAddress"] = from
+        let r = try call(req)
+        guard let fee = (r["fee"] as? String).flatMap(UInt64.init),
+              let totalIn = (r["totalIn"] as? String).flatMap(UInt64.init) else { throw CoreError(message: "the wallet core returned no plan") }
+        return PaymentPlan(outputs: outputs(r["outputs"]), fee: fee, totalIn: totalIn)
+    }
+
+    /// Reads a signed transaction back: its id and outputs.
+    static func decodeTx(_ hex: String) throws -> (txid: String, outputs: [PlannedOutput]) {
+        let r = try call(["op": "decodeTx", "hex": hex])
+        return (r["txid"] as? String ?? "", outputs(r["outputs"]))
+    }
+
+    private static func outputs(_ value: Any?) -> [PlannedOutput] {
+        (value as? [[String: Any]] ?? []).map {
+            PlannedOutput(value: UInt64($0["value"] as? String ?? "") ?? 0, script: $0["script"] as? String ?? "",
+                          kind: $0["kind"] as? String ?? "other", address: $0["address"] as? String,
+                          withdrawalTo: $0["withdrawalTo"] as? String)
+        }
+    }
+
+    private static func paymentRequest(_ op: String, utxos: [Utxo], rawTxs: [String: String],
+                                       to address: String, koinu: UInt64, data: String?) -> [String: Any] {
+        var req: [String: Any] = [
+            "op": op,
+            "utxos": utxos.map { ["txid": $0.txid, "vout": $0.vout, "value": $0.value, "script": $0.script, "confirmations": $0.confirmations] },
+            "rawTxs": rawTxs, "toAddress": address, "amount": String(koinu),
+        ]
+        if let data { req["data"] = data }
+        return req
+    }
 
     struct Payment { let hex: String; let txid: String; let fee: UInt64 }
 
@@ -58,15 +99,26 @@ enum Core {
     /// value from, so a lying server can't inflate the fee.
     static func buildPayment(key: String, utxos: [Utxo], rawTxs: [String: String],
                              to address: String, koinu: UInt64, data: String? = nil) throws -> Payment {
-        var req: [String: Any] = [
-            "op": "buildPayment", "key": key,
-            "utxos": utxos.map { ["txid": $0.txid, "vout": $0.vout, "value": $0.value, "script": $0.script, "confirmations": $0.confirmations] },
-            "rawTxs": rawTxs, "toAddress": address, "amount": String(koinu),
-        ]
-        if let data { req["data"] = data }
+        var req = paymentRequest("buildPayment", utxos: utxos, rawTxs: rawTxs, to: address, koinu: koinu, data: data)
+        req["key"] = key
         let r = try call(req)
         guard let hex = r["hex"] as? String, let txid = r["txid"] as? String,
               let fee = (r["fee"] as? String).flatMap(UInt64.init) else { throw CoreError(message: "the wallet core returned no transaction") }
         return Payment(hex: hex, txid: txid, fee: fee)
     }
+}
+
+/// One output of a payment, as the core describes it.
+struct PlannedOutput: Equatable, Sendable {
+    let value: UInt64
+    let script: String
+    let kind: String            // "address", "data" or "other"
+    let address: String?
+    let withdrawalTo: String?   // for a DVMO withdrawal instruction
+}
+
+struct PaymentPlan: Equatable, Sendable {
+    let outputs: [PlannedOutput]
+    let fee: UInt64
+    let totalIn: UInt64
 }

@@ -30,6 +30,19 @@ enum Request {
     PegOutData { address: String, versions: Option<Versions> },
     ParseDoge { text: String },
     FormatDoge { koinu: u64 },
+    /// What a payment will do, for review: nothing is signed.
+    #[serde(rename_all = "camelCase")]
+    PlanPayment {
+        from_address: String,
+        utxos: Vec<Utxo>,
+        raw_txs: HashMap<String, String>,
+        to_address: String,
+        amount: String,
+        data: Option<String>,
+        versions: Option<Versions>,
+    },
+    /// A signed transaction's id and outputs, read back from its bytes.
+    DecodeTx { hex: String, versions: Option<Versions> },
     #[serde(rename_all = "camelCase")]
     BuildPayment {
         key: String,
@@ -45,6 +58,26 @@ enum Request {
 fn key_from_hex(h: &str) -> Result<Key> {
     let raw = zeroize::Zeroizing::new(hex::decode(h).map_err(|_| Error("key is not hex".into()))?);
     Key::from_bytes(&raw)
+}
+
+/// Describes an output for a person: an address, or a data output (with the
+/// destination of a DVMO withdrawal).
+fn describe(value: u64, script: &[u8], v: Versions) -> Value {
+    match classify_script(script) {
+        ScriptKind::Address(d) => json!({ "value": value.to_string(), "script": hex::encode(script), "kind": "address", "address": d.address(v) }),
+        ScriptKind::Data { bytes, withdrawal_to } => json!({
+            "value": value.to_string(), "script": hex::encode(script), "kind": "data", "data": hex::encode(bytes),
+            "withdrawalTo": withdrawal_to.map(|d| d.address(v)),
+        }),
+        ScriptKind::Other => json!({ "value": value.to_string(), "script": hex::encode(script), "kind": "other" }),
+    }
+}
+
+fn opt_data(data: Option<String>) -> Result<Option<Vec<u8>>> {
+    match data {
+        Some(d) if !d.is_empty() => Ok(Some(hex::decode(d).map_err(|_| Error("data is not hex".into()))?)),
+        _ => Ok(None),
+    }
 }
 
 fn handle(req: Request) -> Result<Value> {
@@ -82,15 +115,32 @@ fn handle(req: Request) -> Result<Value> {
         }
         Request::ParseDoge { text } => json!({ "koinu": parse_doge(&text)?.to_string() }),
         Request::FormatDoge { koinu } => json!({ "doge": format_doge(koinu) }),
+        Request::PlanPayment { from_address, utxos, raw_txs, to_address, amount, data, versions } => {
+            let v = versions.unwrap_or(MAINNET);
+            let from = decode_address(&from_address, v)?;
+            let to = decode_address(&to_address, v)?;
+            let amount: u64 = amount.parse().map_err(|_| Error("amount must be koinu".into()))?;
+            let plan = plan_payment(&from.pk_script(), &utxos, &raw_txs, &to.pk_script(), amount, opt_data(data)?.as_deref())?;
+            json!({
+                "outputs": plan.outputs().iter().map(|(val, s)| describe(*val, s, v)).collect::<Vec<_>>(),
+                "fee": plan.fee.to_string(),
+                "totalIn": plan.total_in.to_string(),
+            })
+        }
+        Request::DecodeTx { hex: h, versions } => {
+            let v = versions.unwrap_or(MAINNET);
+            let raw = hex::decode(h).map_err(|_| Error("transaction is not hex".into()))?;
+            json!({
+                "txid": txid(&raw),
+                "outputs": decode_outputs(&raw)?.iter().map(|(val, s)| describe(*val, s, v)).collect::<Vec<_>>(),
+            })
+        }
         Request::BuildPayment { key, utxos, raw_txs, to_address, amount, data, versions } => {
             let v = versions.unwrap_or(MAINNET);
             let k = key_from_hex(&key)?;
             let to = decode_address(&to_address, v)?;
             let amount: u64 = amount.parse().map_err(|_| Error("amount must be koinu".into()))?;
-            let data = match data {
-                Some(d) if !d.is_empty() => Some(hex::decode(d).map_err(|_| Error("data is not hex".into()))?),
-                _ => None,
-            };
+            let data = opt_data(data)?;
             let p = build_payment(&k, &utxos, &raw_txs, &to.pk_script(), amount, data.as_deref())?;
             json!({ "hex": p.hex, "txid": p.txid, "fee": p.fee.to_string() })
         }
@@ -140,6 +190,7 @@ pub unsafe extern "C" fn dwc_free(s: *mut c_char) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::Digest;
 
     fn call(req: Value) -> Value {
         let c = CString::new(req.to_string()).unwrap();
@@ -163,5 +214,22 @@ mod tests {
         assert_eq!(call(json!({ "op": "parseDoge", "text": "1.5" }))["koinu"], "150000000");
         assert!(call(json!({ "op": "parseKey", "text": "nope" }))["error"].is_string());
         assert!(call(json!({ "op": "whatever" }))["error"].is_string());
+    }
+
+    #[test]
+    fn plan_matches_what_is_signed() {
+        let v: Value = serde_json::from_str(include_str!("../tests/vectors/wallet-vectors.json")).unwrap();
+        let p = &v["payments"][2]; // the DVMO withdrawal
+        let key = hex::encode(sha2::Sha256::digest(p["fromLabel"].as_str().unwrap().as_bytes()));
+        let from = call(json!({ "op": "keyInfo", "key": key }))["address"].clone();
+        let raw: serde_json::Map<String, Value> = p["utxos"].as_array().unwrap().iter()
+            .map(|u| (u["txid"].as_str().unwrap().to_string(), p["prevTx"].clone())).collect();
+        let to = describe(0, &hex::decode(p["toScript"].as_str().unwrap()).unwrap(), MAINNET)["address"].clone();
+        let plan = call(json!({ "op": "planPayment", "fromAddress": from, "utxos": p["utxos"], "rawTxs": raw,
+                                "toAddress": to, "amount": p["amount"], "data": p["data"] }));
+        let decoded = call(json!({ "op": "decodeTx", "hex": p["tx"] }));
+        assert_eq!(plan["outputs"], decoded["outputs"], "the review shows exactly what is signed");
+        assert_eq!(plan["fee"], p["fee"]);
+        assert!(plan["outputs"][1]["withdrawalTo"].is_string(), "the DVMO tag names its destination");
     }
 }

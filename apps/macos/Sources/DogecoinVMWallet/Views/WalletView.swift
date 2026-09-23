@@ -35,10 +35,10 @@ struct WalletView: View {
                 Field(label: "To address", text: $to)
                 Field(label: "Amount (DOGE)", text: $amount).frame(maxWidth: 220)
                 HStack {
-                    Button(sending ? "Sending…" : "Send") { Task { await send() } }
+                    Button(sending ? "Preparing…" : "Review") { Task { await send() } }
                         .buttonStyle(.borderedProminent).tint(Theme.ink)
                         .disabled(sending || to.isEmpty || amount.isEmpty)
-                    Text("Touch ID confirms every payment.").font(.caption).foregroundStyle(Theme.inkSoft)
+                    Text("You review every payment, then Touch ID signs it.").font(.caption).foregroundStyle(Theme.inkSoft)
                 }
                 ResultLine(result: result)
             }
@@ -61,9 +61,9 @@ struct WalletView: View {
     private func send() async {
         sending = true
         defer { sending = false }
+        result = nil
         do {
-            let txid = try await model.send(to: to.trimmingCharacters(in: .whitespaces), amount: amount, on: network)
-            result = .success("Sent on \(network.name). Transaction \(txid.prefix(10))…")
+            try await model.prepareSend(to: to.trimmingCharacters(in: .whitespaces), amount: amount, on: network)
             to = ""
             amount = ""
         } catch {

@@ -10,9 +10,14 @@ struct BalanceTile: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("On \(network.name)")
-                .font(.headline)
-                .foregroundStyle(Theme.ink(for: network))
+            HStack(spacing: 6) {
+                if network == .dogecoin {
+                    Image("DogecoinCoin").resizable().frame(width: 18, height: 18)
+                }
+                Text("On \(network.name)")
+                    .font(.headline)
+                    .foregroundStyle(Theme.ink(for: network))
+            }
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(amount.map(formatDoge) ?? "…")
                     .font(.system(size: 30, weight: .bold, design: .monospaced))

@@ -69,6 +69,12 @@ struct DepositEntry: Codable, Sendable, Identifiable {
     var id: String { "\(txid):\(vout)" }
 }
 
+struct PegOutStatus: Codable, Sendable {
+    let status: String          // pending, paid or unknown
+    let pays: String?
+    let paymentTxid: String?
+}
+
 struct APIError: LocalizedError, Sendable {
     let status: Int            // 0: no response
     let message: String
@@ -142,6 +148,8 @@ actor API {
     }
 
     func deposits(for address: String) async throws -> [DepositEntry] { try await request("api/deposits/\(address)") }
+
+    func pegOut(_ txid: String) async throws -> PegOutStatus { try await request("api/pegout/\(txid)") }
 }
 
 /// Decodes any JSON value, for answers whose content doesn't matter.

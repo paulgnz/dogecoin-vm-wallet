@@ -24,7 +24,8 @@ struct OnboardingView: View {
 
     var body: some View {
         VStack(spacing: 22) {
-            Image("Doge").resizable().scaledToFit().frame(width: 150)
+            Image("DogecoinCoin").resizable().scaledToFit().frame(width: 132)
+                .shadow(color: .black.opacity(0.18), radius: 10, y: 4)
             VStack(spacing: 6) {
                 Text("DogecoinVM Wallet").font(.system(size: 30, weight: .heavy))
                 Text("One key for Dogecoin and DogecoinVM, and the bridge between them. Your key is protected by Touch ID and never leaves this Mac.")
@@ -93,9 +94,21 @@ struct MainView: View {
     @State private var section: Section? = .wallet
 
     var body: some View {
+        @Bindable var model = model
         NavigationSplitView {
-            List(Section.allCases, selection: $section) { s in
-                Label(s.title, systemImage: s.symbol).tag(s)
+            List(selection: $section) {
+                HStack(spacing: 10) {
+                    Image("DogecoinCoin").resizable().frame(width: 34, height: 34)
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text("DogecoinVM").font(.headline)
+                        Text("Wallet").font(.subheadline).foregroundStyle(Theme.inkSoft)
+                    }
+                }
+                .padding(.vertical, 6)
+                .selectionDisabled()
+                ForEach(Section.allCases) { s in
+                    Label(s.title, systemImage: s.symbol).tag(s)
+                }
             }
             .navigationSplitViewColumnWidth(min: 200, ideal: 220)
             .safeAreaInset(edge: .bottom) { ChainStatus().padding(12) }
@@ -125,6 +138,7 @@ struct MainView: View {
                 }
             }
             .navigationTitle((section ?? .wallet).title)
+            .sheet(item: $model.review) { ReviewSheet(payment: $0) }
             .toolbar {
                 ToolbarItem {
                     Button { Task { await model.refresh() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }
