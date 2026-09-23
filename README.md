@@ -57,7 +57,23 @@ xcodegen generate && open DogecoinVMWallet.xcodeproj
 ```
 
 Release: `apps/macos/scripts/release-dmg.sh` archives, signs with Developer ID, notarizes and staples a DMG
-for download outside the App Store (`--no-notarize` to skip notarization).
+for download outside the App Store (`--no-notarize` to skip notarization). Then
+`apps/macos/scripts/publish-update.sh DMG` signs it into the update feed and uploads both to
+<https://metaldoge.com/download/macos/>.
+
+## Updates
+
+The app updates itself with [Sparkle](https://sparkle-project.org): it checks
+`https://metaldoge.com/download/macos/appcast.xml` daily (and from **Check for Updates…**), and installs
+an update only if it is signed with the update key. The public half of that key is in `Info.plist`; the
+private half lives in the release Mac's keychain, never in this repository. Back it up once
+(`generate_keys --account dogecoinvm-wallet -x`), because without it installed apps can't be updated.
+
+## Signing a payment
+
+Every payment is shown for review before it's signed: each output decoded in plain terms (who's paid,
+change back to you, a withdrawal's Dogecoin destination), the fee, and the total leaving the wallet. After
+Touch ID, the wallet decodes the signed transaction and sends it only if it matches what you reviewed.
 
 ## Status
 

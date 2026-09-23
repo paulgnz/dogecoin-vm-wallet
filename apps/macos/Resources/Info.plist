@@ -14,6 +14,13 @@
     <key>LSMinimumSystemVersion</key><string>$(MACOSX_DEPLOYMENT_TARGET)</string>
     <key>LSApplicationCategoryType</key><string>public.app-category.finance</string>
     <key>NSHumanReadableCopyright</key><string>DogecoinVM</string>
+    <!-- Sparkle updates: a signed feed; updates must be signed with the key
+         whose public half is here (the private half stays in the release
+         keychain, account dogecoinvm-wallet). -->
+    <key>SUFeedURL</key><string>https://metaldoge.com/download/macos/appcast.xml</string>
+    <key>SUPublicEDKey</key><string>HXXxvN6JHsJEj+NePSeFfvqur3Mm8Ed+zfoqLk8Frlo=</string>
+    <key>SUEnableAutomaticChecks</key><true/>
+    <key>SUScheduledCheckInterval</key><integer>86400</integer>
     <key>NSFaceIDUsageDescription</key><string>DogecoinVM Wallet uses Touch ID to unlock your key for each payment.</string>
 </dict>
 </plist>

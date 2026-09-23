@@ -24,6 +24,7 @@ struct ReceiveView: View {
 
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.checkForUpdates) private var checkForUpdates
     @State private var server = ""
     @State private var wif: String?
     @State private var confirmRemove = false
@@ -76,8 +77,11 @@ struct SettingsView: View {
 
             ResultLine(result: result)
 
-            Text("DogecoinVM Wallet \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "") · keys and signing by the open-source core in github.com/paulgnz/dogecoin-vm-wallet")
-                .font(.caption).foregroundStyle(Theme.inkSoft)
+            HStack {
+                Text("DogecoinVM Wallet \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "")")
+                Button("Check for updates") { checkForUpdates() }.buttonStyle(.link)
+            }
+            .font(.caption).foregroundStyle(Theme.inkSoft)
         }
         .onAppear { server = model.server.absoluteString }
         .confirmationDialog("Remove the wallet from this Mac?", isPresented: $confirmRemove) {

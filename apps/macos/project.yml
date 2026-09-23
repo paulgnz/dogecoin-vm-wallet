@@ -10,7 +10,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: "6.0"
-    MARKETING_VERSION: "0.1.0"
+    MARKETING_VERSION: "0.2.0"
     CURRENT_PROJECT_VERSION: "1"
     # DEVELOPMENT_TEAM comes from Signing.xcconfig (gitignored). A stable team
     # keeps the Secure Enclave–wrapped key readable across builds.
@@ -19,6 +19,11 @@ settings:
     SWIFT_STRICT_CONCURRENCY: complete
     DEAD_CODE_STRIPPING: true
     ENABLE_USER_SCRIPT_SANDBOXING: true
+
+packages:
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: "2.6.0"
 
 schemes:
   DogecoinVMWallet:
@@ -37,6 +42,8 @@ targets:
     configFiles:
       Debug: Signing.xcconfig
       Release: Signing.xcconfig
+    dependencies:
+      - package: Sparkle
     sources:
       - path: Sources
       - path: Resources
