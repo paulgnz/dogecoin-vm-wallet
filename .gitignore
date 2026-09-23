@@ -1,0 +1,17 @@
+core/target/
+build/
+apps/macos/build/
+apps/macos/*.xcodeproj/
+apps/macos/Vendor/*.a
+apps/macos/Signing.xcconfig
+xcuserdata/
+.DS_Store
+
+# Secrets. Never commit these; tools/secretscan and .githooks enforce it.
+*.key
+*.pem
+*.p12
+*.p8
+*.wif
+.env
+.env.*

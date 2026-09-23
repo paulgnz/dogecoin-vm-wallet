@@ -1,0 +1,5 @@
+#!/bin/sh
+# Refuse pushes whose commits contain private keys, tokens or passwords.
+cd "$(git rev-parse --show-toplevel)" || exit 1
+command -v go >/dev/null 2>&1 || { echo "pre-push: Go is needed to scan for secrets; not pushing." >&2; exit 1; }
+cd tools/secretscan && exec go run . push

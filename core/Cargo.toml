@@ -1,0 +1,25 @@
+[package]
+name = "dogevm-wallet-core"
+version = "0.1.0"
+edition = "2021"
+description = "Keys, addresses and transactions for Dogecoin and DogecoinVM, shared by the macOS wallet."
+license = "MIT"
+
+[lib]
+# staticlib: linked into the macOS app through a C ABI. rlib: tests.
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+k256 = { version = "0.13", features = ["ecdsa", "sha256"] }
+sha2 = "0.10"
+ripemd = "0.1"
+bs58 = "0.5"
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rand_core = { version = "0.6", features = ["getrandom"] }
+zeroize = "1"
+
+[profile.release]
+lto = true
+codegen-units = 1

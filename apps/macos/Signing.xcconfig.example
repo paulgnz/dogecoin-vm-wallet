@@ -1,0 +1,5 @@
+// Copy to Signing.xcconfig (gitignored) and set your Apple Development Team ID.
+// Find it: security find-identity -v -p codesigning (the 10 characters in parentheses).
+// A stable team keeps the wallet key readable across rebuilds.
+DEVELOPMENT_TEAM = ABCDE12345
+CODE_SIGN_STYLE = Automatic
