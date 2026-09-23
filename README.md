@@ -43,7 +43,7 @@ verified against the raw transaction that created it, so a dishonest server can'
 The core must agree **byte for byte** with the DogecoinVM web wallet. Its tests run against vectors the web
 wallet generates and the DogecoinVM Go code verifies with btcd's script engine
 (`core/tests/vectors/wallet-vectors.json`, from
-[dogecoin-vm](https://github.com/paulgnz/dogecoin-vm) `cmd/dogevm/testdata`). `scripts/sync-vectors.sh` copies
+[dogecoin-vm](https://github.com/MetalBlockchain/dogecoin-vm) `cmd/dogevm/testdata`). `scripts/sync-vectors.sh` copies
 a new version and runs the tests.
 
 ## Building
