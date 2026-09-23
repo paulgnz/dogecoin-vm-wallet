@@ -33,6 +33,7 @@ echo "▶︎ Signing the update feed…"
 echo "▶︎ Uploading…"
 ssh -i "$SSH_KEY" "$HOST" "mkdir -p $REMOTE_DIR"
 rsync -a -e "ssh -i $SSH_KEY" "$UPDATES/appcast.xml" "$UPDATES/"*.dmg "$HOST:$REMOTE_DIR/"
-# A stable link to the newest version.
+# A stable link to the newest version, and its checksum for the download page.
 ssh -i "$SSH_KEY" "$HOST" "cp $REMOTE_DIR/$(basename "$DMG") $REMOTE_DIR/DogecoinVM-Wallet.dmg"
+shasum -a 256 "$DMG" | awk '{print $1 "  DogecoinVM-Wallet.dmg"}' | ssh -i "$SSH_KEY" "$HOST" "cat > $REMOTE_DIR/DogecoinVM-Wallet.dmg.sha256"
 echo "✅ Published: ${URL_PREFIX}DogecoinVM-Wallet.dmg (feed: ${URL_PREFIX}appcast.xml)"
