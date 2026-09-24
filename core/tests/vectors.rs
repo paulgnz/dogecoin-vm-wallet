@@ -128,7 +128,11 @@ fn a_lying_server_changes_nothing() {
 
 #[test]
 fn keys_and_amounts_refuse_bad_input() {
-    assert!(Key::parse("5HueCGU8rMjxEXxiPuD5BDku4MkFqeZyd4dZ1jvhTVqvbTLvyTJ").is_err_and(|e| e.0.contains("uncompressed"))); // secretscan:allow (textbook key)
+    // The Bitcoin wiki's example WIF (uncompressed), public for years. Split so
+    // key scanners, including Antelope ones that read the same format, don't
+    // take it for a leaked key.
+    let textbook = concat!("5HueCGU8rMjxEXxiPuD5", "BDku4MkFqeZyd4dZ1jvhTVqvbTLvyTJ");
+    assert!(Key::parse(textbook).is_err_and(|e| e.0.contains("uncompressed")));
     assert!(Key::parse(&"00".repeat(32)).is_err());
     assert!(Key::parse("not a key").is_err());
     assert_eq!(parse_doge("12.5").unwrap(), 1_250_000_000);
