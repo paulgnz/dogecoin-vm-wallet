@@ -4,6 +4,7 @@ apps/macos/build/
 apps/macos/*.xcodeproj/
 apps/macos/Vendor/*.a
 apps/macos/Signing.xcconfig
+apps/macos/deploy.env
 xcuserdata/
 .DS_Store
 
@@ -15,3 +16,7 @@ xcuserdata/
 *.wif
 .env
 .env.*
+
+# Sparkle update-signing key exports. Keep them in a password manager.
+update-key*
+*sparkle*key*
