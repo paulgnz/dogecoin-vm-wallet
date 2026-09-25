@@ -18,18 +18,40 @@ enum Request {
     /// A new random key.
     NewKey,
     /// A key typed or pasted by the user: hex, or a compressed WIF.
-    ParseKey { text: String },
+    ParseKey {
+        text: String,
+    },
     /// A key's public details.
-    KeyInfo { key: String, versions: Option<Versions> },
+    KeyInfo {
+        key: String,
+        versions: Option<Versions>,
+    },
     /// A key's WIF, for backup.
-    Wif { key: String, versions: Option<Versions> },
-    DecodeAddress { address: String, versions: Option<Versions> },
+    Wif {
+        key: String,
+        versions: Option<Versions>,
+    },
+    DecodeAddress {
+        address: String,
+        versions: Option<Versions>,
+    },
     #[serde(rename_all = "camelCase")]
-    DepositAddress { address: String, signers: Signers, versions: Option<Versions> },
+    DepositAddress {
+        address: String,
+        signers: Signers,
+        versions: Option<Versions>,
+    },
     #[serde(rename_all = "camelCase")]
-    PegOutData { address: String, versions: Option<Versions> },
-    ParseDoge { text: String },
-    FormatDoge { koinu: u64 },
+    PegOutData {
+        address: String,
+        versions: Option<Versions>,
+    },
+    ParseDoge {
+        text: String,
+    },
+    FormatDoge {
+        koinu: u64,
+    },
     /// What a payment will do, for review: nothing is signed.
     #[serde(rename_all = "camelCase")]
     PlanPayment {
@@ -40,9 +62,14 @@ enum Request {
         amount: String,
         data: Option<String>,
         versions: Option<Versions>,
+        /// Koinu per byte; Dogecoin's recommended rate if absent.
+        fee_per_byte: Option<u64>,
     },
     /// A signed transaction's id and outputs, read back from its bytes.
-    DecodeTx { hex: String, versions: Option<Versions> },
+    DecodeTx {
+        hex: String,
+        versions: Option<Versions>,
+    },
     #[serde(rename_all = "camelCase")]
     BuildPayment {
         key: String,
@@ -52,6 +79,7 @@ enum Request {
         amount: String, // koinu
         data: Option<String>,
         versions: Option<Versions>,
+        fee_per_byte: Option<u64>,
     },
 }
 
@@ -64,18 +92,27 @@ fn key_from_hex(h: &str) -> Result<Key> {
 /// destination of a DVMO withdrawal).
 fn describe(value: u64, script: &[u8], v: Versions) -> Value {
     match classify_script(script) {
-        ScriptKind::Address(d) => json!({ "value": value.to_string(), "script": hex::encode(script), "kind": "address", "address": d.address(v) }),
-        ScriptKind::Data { bytes, withdrawal_to } => json!({
+        ScriptKind::Address(d) => {
+            json!({ "value": value.to_string(), "script": hex::encode(script), "kind": "address", "address": d.address(v) })
+        }
+        ScriptKind::Data {
+            bytes,
+            withdrawal_to,
+        } => json!({
             "value": value.to_string(), "script": hex::encode(script), "kind": "data", "data": hex::encode(bytes),
             "withdrawalTo": withdrawal_to.map(|d| d.address(v)),
         }),
-        ScriptKind::Other => json!({ "value": value.to_string(), "script": hex::encode(script), "kind": "other" }),
+        ScriptKind::Other => {
+            json!({ "value": value.to_string(), "script": hex::encode(script), "kind": "other" })
+        }
     }
 }
 
 fn opt_data(data: Option<String>) -> Result<Option<Vec<u8>>> {
     match data {
-        Some(d) if !d.is_empty() => Ok(Some(hex::decode(d).map_err(|_| Error("data is not hex".into()))?)),
+        Some(d) if !d.is_empty() => Ok(Some(
+            hex::decode(d).map_err(|_| Error("data is not hex".into()))?,
+        )),
         _ => Ok(None),
     }
 }
@@ -102,7 +139,11 @@ fn handle(req: Request) -> Result<Value> {
             let d = decode_address(&address, versions.unwrap_or(MAINNET))?;
             json!({ "kind": d.kind, "hash160": hex::encode(d.hash), "script": hex::encode(d.pk_script()) })
         }
-        Request::DepositAddress { address, signers, versions } => {
+        Request::DepositAddress {
+            address,
+            signers,
+            versions,
+        } => {
             let v = versions.unwrap_or(MAINNET);
             let dest = decode_address(&address, v)?;
             json!({
@@ -115,12 +156,31 @@ fn handle(req: Request) -> Result<Value> {
         }
         Request::ParseDoge { text } => json!({ "koinu": parse_doge(&text)?.to_string() }),
         Request::FormatDoge { koinu } => json!({ "doge": format_doge(koinu) }),
-        Request::PlanPayment { from_address, utxos, raw_txs, to_address, amount, data, versions } => {
+        Request::PlanPayment {
+            from_address,
+            utxos,
+            raw_txs,
+            to_address,
+            amount,
+            data,
+            versions,
+            fee_per_byte,
+        } => {
             let v = versions.unwrap_or(MAINNET);
             let from = decode_address(&from_address, v)?;
             let to = decode_address(&to_address, v)?;
-            let amount: u64 = amount.parse().map_err(|_| Error("amount must be koinu".into()))?;
-            let plan = plan_payment(&from.pk_script(), &utxos, &raw_txs, &to.pk_script(), amount, opt_data(data)?.as_deref())?;
+            let amount: u64 = amount
+                .parse()
+                .map_err(|_| Error("amount must be koinu".into()))?;
+            let plan = plan_payment(
+                &from.pk_script(),
+                &utxos,
+                &raw_txs,
+                &to.pk_script(),
+                amount,
+                opt_data(data)?.as_deref(),
+                fee_per_byte.unwrap_or(FEE_PER_BYTE),
+            )?;
             json!({
                 "outputs": plan.outputs().iter().map(|(val, s)| describe(*val, s, v)).collect::<Vec<_>>(),
                 "fee": plan.fee.to_string(),
@@ -135,20 +195,41 @@ fn handle(req: Request) -> Result<Value> {
                 "outputs": decode_outputs(&raw)?.iter().map(|(val, s)| describe(*val, s, v)).collect::<Vec<_>>(),
             })
         }
-        Request::BuildPayment { key, utxos, raw_txs, to_address, amount, data, versions } => {
+        Request::BuildPayment {
+            key,
+            utxos,
+            raw_txs,
+            to_address,
+            amount,
+            data,
+            versions,
+            fee_per_byte,
+        } => {
             let v = versions.unwrap_or(MAINNET);
             let k = key_from_hex(&key)?;
             let to = decode_address(&to_address, v)?;
-            let amount: u64 = amount.parse().map_err(|_| Error("amount must be koinu".into()))?;
+            let amount: u64 = amount
+                .parse()
+                .map_err(|_| Error("amount must be koinu".into()))?;
             let data = opt_data(data)?;
-            let p = build_payment(&k, &utxos, &raw_txs, &to.pk_script(), amount, data.as_deref())?;
+            let p = build_payment(
+                &k,
+                &utxos,
+                &raw_txs,
+                &to.pk_script(),
+                amount,
+                data.as_deref(),
+                fee_per_byte.unwrap_or(FEE_PER_BYTE),
+            )?;
             json!({ "hex": p.hex, "txid": p.txid, "fee": p.fee.to_string() })
         }
     })
 }
 
 fn respond(v: Value) -> *mut c_char {
-    CString::new(v.to_string()).expect("JSON has no NUL").into_raw()
+    CString::new(v.to_string())
+        .expect("JSON has no NUL")
+        .into_raw()
 }
 
 /// # Safety
@@ -211,25 +292,48 @@ mod tests {
         let wif = call(json!({ "op": "wif", "key": key }));
         let back = call(json!({ "op": "parseKey", "text": wif["wif"] }));
         assert_eq!(back["key"], k["key"]);
-        assert_eq!(call(json!({ "op": "parseDoge", "text": "1.5" }))["koinu"], "150000000");
+        assert_eq!(
+            call(json!({ "op": "parseDoge", "text": "1.5" }))["koinu"],
+            "150000000"
+        );
         assert!(call(json!({ "op": "parseKey", "text": "nope" }))["error"].is_string());
         assert!(call(json!({ "op": "whatever" }))["error"].is_string());
     }
 
     #[test]
     fn plan_matches_what_is_signed() {
-        let v: Value = serde_json::from_str(include_str!("../tests/vectors/wallet-vectors.json")).unwrap();
+        let v: Value =
+            serde_json::from_str(include_str!("../tests/vectors/wallet-vectors.json")).unwrap();
         let p = &v["payments"][2]; // the DVMO withdrawal
-        let key = hex::encode(sha2::Sha256::digest(p["fromLabel"].as_str().unwrap().as_bytes()));
+        let key = hex::encode(sha2::Sha256::digest(
+            p["fromLabel"].as_str().unwrap().as_bytes(),
+        ));
         let from = call(json!({ "op": "keyInfo", "key": key }))["address"].clone();
-        let raw: serde_json::Map<String, Value> = p["utxos"].as_array().unwrap().iter()
-            .map(|u| (u["txid"].as_str().unwrap().to_string(), p["prevTx"].clone())).collect();
-        let to = describe(0, &hex::decode(p["toScript"].as_str().unwrap()).unwrap(), MAINNET)["address"].clone();
-        let plan = call(json!({ "op": "planPayment", "fromAddress": from, "utxos": p["utxos"], "rawTxs": raw,
-                                "toAddress": to, "amount": p["amount"], "data": p["data"] }));
+        let raw: serde_json::Map<String, Value> = p["utxos"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|u| (u["txid"].as_str().unwrap().to_string(), p["prevTx"].clone()))
+            .collect();
+        let to = describe(
+            0,
+            &hex::decode(p["toScript"].as_str().unwrap()).unwrap(),
+            MAINNET,
+        )["address"]
+            .clone();
+        let plan = call(
+            json!({ "op": "planPayment", "fromAddress": from, "utxos": p["utxos"], "rawTxs": raw,
+                                "toAddress": to, "amount": p["amount"], "data": p["data"] }),
+        );
         let decoded = call(json!({ "op": "decodeTx", "hex": p["tx"] }));
-        assert_eq!(plan["outputs"], decoded["outputs"], "the review shows exactly what is signed");
+        assert_eq!(
+            plan["outputs"], decoded["outputs"],
+            "the review shows exactly what is signed"
+        );
         assert_eq!(plan["fee"], p["fee"]);
-        assert!(plan["outputs"][1]["withdrawalTo"].is_string(), "the DVMO tag names its destination");
+        assert!(
+            plan["outputs"][1]["withdrawalTo"].is_string(),
+            "the DVMO tag names its destination"
+        );
     }
 }

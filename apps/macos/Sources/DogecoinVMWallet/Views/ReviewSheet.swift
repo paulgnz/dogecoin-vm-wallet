@@ -106,10 +106,16 @@ struct ReviewSheet: View {
         return out.address
     }
 
+    /// The Dogecoin confirmations this deposit needs, for its size.
+    private var confirmationsText: String {
+        let n = model.info?.confirmations(for: payment.koinu) ?? 20
+        return "\(n) Dogecoin confirmation\(n == 1 ? "" : "s")"
+    }
+
     private var note: String? {
         switch payment.kind {
         case .send: nil
-        case .moveIn: "Your deposit address was derived on this Mac from the signers' keys and matches the bridge's. It's credited to you on DogecoinVM after \(model.info?.depositConfirmations ?? 20) Dogecoin confirmations, less a \(formatDoge(model.info?.vmFee ?? "0.01")) DOGE fee."
+        case .moveIn: "Your deposit address was derived on this Mac from the signers' keys and matches the bridge's. It's credited to you on DogecoinVM after \(confirmationsText), less a \(formatDoge(model.info?.vmFee ?? "0.01")) DOGE fee."
         case .withdraw: "The bridge pays \(formatDoge(Core.dogeText(payment.koinu))) DOGE, less its \(formatDoge(model.info?.dogeFee ?? "0.1")) DOGE Dogecoin fee, to \(payment.withdrawalTo ?? "") once this is final on DogecoinVM."
         }
     }

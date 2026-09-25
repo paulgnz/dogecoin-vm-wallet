@@ -238,7 +238,8 @@ final class AppModel {
         for txid in Set(utxos.map(\.txid)) {
             raw[txid] = try await api.rawTx(txid, on: network)
         }
-        let plan = try Core.planPayment(from: address, utxos: utxos, rawTxs: raw, to: destination, koinu: koinu, data: data)
+        let plan = try Core.planPayment(from: address, utxos: utxos, rawTxs: raw, to: destination, koinu: koinu,
+                                        data: data, feePerByte: network.feePerByte)
         return PendingPayment(kind: kind, network: network, to: destination, koinu: koinu, data: data,
                               withdrawalTo: withdrawalTo, utxos: utxos, rawTxs: raw, plan: plan)
     }
@@ -248,7 +249,7 @@ final class AppModel {
     func confirm(_ p: PendingPayment) async throws -> String {
         let key = try await unlock(reason: p.touchIDReason)
         let payment = try Core.buildPayment(key: key, utxos: p.utxos, rawTxs: p.rawTxs, to: p.to,
-                                            koinu: p.koinu, data: p.data)
+                                            koinu: p.koinu, data: p.data, feePerByte: p.network.feePerByte)
         let signed = try Core.decodeTx(payment.hex)
         guard signed.outputs == p.plan.outputs, payment.fee == p.plan.fee, signed.txid == payment.txid else {
             throw CoreError(message: "The signed transaction didn't match what you reviewed, so it wasn't sent.")

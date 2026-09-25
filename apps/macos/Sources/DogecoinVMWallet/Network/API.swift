@@ -19,6 +19,39 @@ struct BridgeInfo: Codable, Sendable {
     let maxDeposit: String
     let maxCirculating: String
     let dogeWallet: Bool?
+    /// Smaller deposits need fewer confirmations; larger ones need
+    /// depositConfirmations.
+    let confirmationTiers: [ConfirmationTier]?
+
+    struct ConfirmationTier: Codable, Sendable { let upTo: String; let confirmations: Int }
+
+    /// How many Dogecoin confirmations a deposit of `koinu` needs.
+    func confirmations(for koinu: UInt64) -> Int {
+        for t in confirmationTiers ?? [] where koinu <= parseKoinu(t.upTo) {
+            return t.confirmations
+        }
+        return depositConfirmations
+    }
+
+    /// How long deposits wait, e.g. "1 confirmation for up to 1 DOGE, 6 for
+    /// up to 10 DOGE, … and 20 for anything larger".
+    var confirmationsText: String {
+        let tiers = confirmationTiers ?? []
+        func plural(_ n: Int) -> String { "\(n) confirmation\(n == 1 ? "" : "s")" }
+        if tiers.isEmpty { return plural(depositConfirmations) }
+        let parts = tiers.enumerated().map { i, t in
+            "\(i == 0 ? plural(t.confirmations) : String(t.confirmations)) for up to \(formatDoge(t.upTo)) DOGE"
+        }
+        return parts.joined(separator: ", ") + ", and \(depositConfirmations) for anything larger"
+    }
+}
+
+/// Koinu in a DOGE decimal string from the API.
+private func parseKoinu(_ doge: String) -> UInt64 {
+    let parts = doge.split(separator: ".", maxSplits: 1)
+    let whole = UInt64(parts.first ?? "0") ?? 0
+    let frac = parts.count > 1 ? String(parts[1].prefix(8)).padding(toLength: 8, withPad: "0", startingAt: 0) : "00000000"
+    return whole * 100_000_000 + (UInt64(frac) ?? 0)
 }
 
 struct BridgeStatus: Codable, Sendable {
@@ -86,6 +119,10 @@ enum Network: String, CaseIterable, Identifiable, Sendable {
     case dogecoinvm, dogecoin
     var id: String { rawValue }
     var name: String { self == .dogecoin ? "Dogecoin" : "DogecoinVM" }
+    /// Koinu per byte. DogecoinVM pays its relay minimum, 0.001 DOGE/kB: its
+    /// blocks have room to spare. Dogecoin, which can be busy, gets the core's
+    /// default, the recommended 0.01 DOGE/kB.
+    var feePerByte: UInt64? { self == .dogecoinvm ? 100 : nil }
 }
 
 actor API {

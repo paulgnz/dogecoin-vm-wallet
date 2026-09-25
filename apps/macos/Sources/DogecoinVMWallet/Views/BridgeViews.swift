@@ -8,7 +8,7 @@ struct MoveInView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
-            Text("Move DOGE from your Dogecoin balance to DogecoinVM. It's credited one for one after \(model.info?.depositConfirmations ?? 20) Dogecoin confirmations, about as many minutes, less a \(formatDoge(model.info?.vmFee ?? "0.01")) DOGE fee.")
+            Text("Move DOGE from your Dogecoin balance to DogecoinVM. It's credited one for one once Dogecoin has confirmed it enough for its size (\(model.info?.confirmationsText ?? "20 confirmations"), about a minute each), less a \(formatDoge(model.info?.vmFee ?? "0.01")) DOGE fee.")
                 .fixedSize(horizontal: false, vertical: true)
             if let sync = model.status?.dogecoinSync, sync.syncing {
                 Label("The bridge's Dogecoin node is catching up (\(Int(sync.progress * 100))%). Deposits are credited once it reaches the present.",

@@ -53,6 +53,8 @@ struct PaymentVector {
     tx: String,
     txid: String,
     fee: String,
+    #[serde(default)]
+    fee_per_byte: Option<String>,
 }
 
 fn vectors() -> Vectors {
@@ -69,12 +71,20 @@ fn keys_and_addresses() {
     assert_eq!(v.versions, MAINNET);
     for k in &v.keys {
         let key = key_for(&k.label);
-        assert_eq!(hex::encode(key.destination().hash), k.hash160, "{}", k.label);
+        assert_eq!(
+            hex::encode(key.destination().hash),
+            k.hash160,
+            "{}",
+            k.label
+        );
         assert_eq!(key.destination().address(MAINNET), k.address, "{}", k.label);
         assert_eq!(key.wif(MAINNET).as_str(), k.wif, "{}", k.label);
         // The WIF parses back to the same key.
         assert_eq!(Key::parse(&k.wif).unwrap().bytes(), key.bytes());
-        assert_eq!(decode_address(&k.address, MAINNET).unwrap(), key.destination());
+        assert_eq!(
+            decode_address(&k.address, MAINNET).unwrap(),
+            key.destination()
+        );
     }
 }
 
@@ -84,8 +94,14 @@ fn deposit_address_matches() {
     let mut hash = [0u8; 20];
     hash.copy_from_slice(&hex::decode(&v.deposit.dest.hash160).unwrap());
     let dest = Destination { kind: 0, hash };
-    assert_eq!(hex::encode(deposit_redeem_script(&dest, &v.deposit.signers).unwrap()), v.deposit.redeem_script);
-    assert_eq!(deposit_address(&dest, &v.deposit.signers, MAINNET).unwrap(), v.deposit.address);
+    assert_eq!(
+        hex::encode(deposit_redeem_script(&dest, &v.deposit.signers).unwrap()),
+        v.deposit.redeem_script
+    );
+    assert_eq!(
+        deposit_address(&dest, &v.deposit.signers, MAINNET).unwrap(),
+        v.deposit.address
+    );
     // The reserve (peg) script is P2SH of the bare multisig; a deposit
     // address is P2SH of its redeem script.
     let deposit = decode_address(&v.deposit.address, MAINNET).unwrap();
@@ -98,12 +114,28 @@ fn payments_match_byte_for_byte() {
     let v = vectors();
     for p in &v.payments {
         let key = key_for(&p.from_label);
-        let raw: HashMap<String, String> = p.utxos.iter().map(|u| (u.txid.clone(), p.prev_tx.clone())).collect();
-        let data = if p.data.is_empty() { None } else { Some(hex::decode(&p.data).unwrap()) };
+        let raw: HashMap<String, String> = p
+            .utxos
+            .iter()
+            .map(|u| (u.txid.clone(), p.prev_tx.clone()))
+            .collect();
+        let data = if p.data.is_empty() {
+            None
+        } else {
+            Some(hex::decode(&p.data).unwrap())
+        };
         let got = build_payment(
-            &key, &p.utxos, &raw, &hex::decode(&p.to_script).unwrap(),
-            p.amount.parse().unwrap(), data.as_deref(),
-        ).unwrap_or_else(|e| panic!("{}: {e}", p.name));
+            &key,
+            &p.utxos,
+            &raw,
+            &hex::decode(&p.to_script).unwrap(),
+            p.amount.parse().unwrap(),
+            data.as_deref(),
+            p.fee_per_byte
+                .as_ref()
+                .map_or(FEE_PER_BYTE, |f| f.parse().unwrap()),
+        )
+        .unwrap_or_else(|e| panic!("{}: {e}", p.name));
         assert_eq!(got.hex, p.tx, "{}", p.name);
         assert_eq!(got.txid, p.txid, "{}", p.name);
         assert_eq!(got.fee.to_string(), p.fee, "{}", p.name);
@@ -115,14 +147,42 @@ fn a_lying_server_changes_nothing() {
     let v = vectors();
     let p = &v.payments[0];
     let key = key_for(&p.from_label);
-    let raw: HashMap<String, String> = p.utxos.iter().map(|u| (u.txid.clone(), p.prev_tx.clone())).collect();
+    let raw: HashMap<String, String> = p
+        .utxos
+        .iter()
+        .map(|u| (u.txid.clone(), p.prev_tx.clone()))
+        .collect();
     let mut inflated = p.utxos.clone();
     inflated[0].value = "999999999999999".into();
-    let got = build_payment(&key, &inflated, &raw, &hex::decode(&p.to_script).unwrap(), p.amount.parse().unwrap(), None).unwrap();
-    assert_eq!(got.hex, p.tx, "the value comes from the verified transaction");
+    let got = build_payment(
+        &key,
+        &inflated,
+        &raw,
+        &hex::decode(&p.to_script).unwrap(),
+        p.amount.parse().unwrap(),
+        None,
+        FEE_PER_BYTE,
+    )
+    .unwrap();
+    assert_eq!(
+        got.hex, p.tx,
+        "the value comes from the verified transaction"
+    );
 
-    let wrong: HashMap<String, String> = p.utxos.iter().map(|u| (u.txid.clone(), v.payments[1].prev_tx.clone())).collect();
-    let e = build_payment(&key, &p.utxos, &wrong, &hex::decode(&p.to_script).unwrap(), p.amount.parse().unwrap(), None);
+    let wrong: HashMap<String, String> = p
+        .utxos
+        .iter()
+        .map(|u| (u.txid.clone(), v.payments[1].prev_tx.clone()))
+        .collect();
+    let e = build_payment(
+        &key,
+        &p.utxos,
+        &wrong,
+        &hex::decode(&p.to_script).unwrap(),
+        p.amount.parse().unwrap(),
+        None,
+        FEE_PER_BYTE,
+    );
     assert!(e.is_err_and(|e| e.0.contains("wrong transaction")));
 }
 
@@ -143,5 +203,8 @@ fn keys_and_amounts_refuse_bad_input() {
     assert_eq!(format_doge(1_250_000_000), "12.5");
     assert_eq!(format_doge(100_000_000), "1");
     let fresh = Key::generate();
-    assert_eq!(Key::parse(&hex::encode(fresh.bytes())).unwrap().bytes(), fresh.bytes());
+    assert_eq!(
+        Key::parse(&hex::encode(fresh.bytes())).unwrap().bytes(),
+        fresh.bytes()
+    );
 }

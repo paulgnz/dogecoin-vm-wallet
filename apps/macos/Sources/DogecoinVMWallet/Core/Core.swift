@@ -58,8 +58,10 @@ enum Core {
 
     /// Plans a payment for review: nothing is signed.
     static func planPayment(from: String, utxos: [Utxo], rawTxs: [String: String],
-                            to address: String, koinu: UInt64, data: String? = nil) throws -> PaymentPlan {
-        var req = paymentRequest("planPayment", utxos: utxos, rawTxs: rawTxs, to: address, koinu: koinu, data: data)
+                            to address: String, koinu: UInt64, data: String? = nil,
+                            feePerByte: UInt64? = nil) throws -> PaymentPlan {
+        var req = paymentRequest("planPayment", utxos: utxos, rawTxs: rawTxs, to: address, koinu: koinu,
+                                 data: data, feePerByte: feePerByte)
         req["fromAddress"] = from
         let r = try call(req)
         guard let fee = (r["fee"] as? String).flatMap(UInt64.init),
@@ -82,13 +84,15 @@ enum Core {
     }
 
     private static func paymentRequest(_ op: String, utxos: [Utxo], rawTxs: [String: String],
-                                       to address: String, koinu: UInt64, data: String?) -> [String: Any] {
+                                       to address: String, koinu: UInt64, data: String?,
+                                       feePerByte: UInt64?) -> [String: Any] {
         var req: [String: Any] = [
             "op": op,
             "utxos": utxos.map { ["txid": $0.txid, "vout": $0.vout, "value": $0.value, "script": $0.script, "confirmations": $0.confirmations] },
             "rawTxs": rawTxs, "toAddress": address, "amount": String(koinu),
         ]
         if let data { req["data"] = data }
+        if let feePerByte { req["feePerByte"] = feePerByte }
         return req
     }
 
@@ -98,8 +102,10 @@ enum Core {
     /// transaction, which the core checks against its txid and takes the
     /// value from, so a lying server can't inflate the fee.
     static func buildPayment(key: String, utxos: [Utxo], rawTxs: [String: String],
-                             to address: String, koinu: UInt64, data: String? = nil) throws -> Payment {
-        var req = paymentRequest("buildPayment", utxos: utxos, rawTxs: rawTxs, to: address, koinu: koinu, data: data)
+                             to address: String, koinu: UInt64, data: String? = nil,
+                             feePerByte: UInt64? = nil) throws -> Payment {
+        var req = paymentRequest("buildPayment", utxos: utxos, rawTxs: rawTxs, to: address, koinu: koinu,
+                                 data: data, feePerByte: feePerByte)
         req["key"] = key
         let r = try call(req)
         guard let hex = r["hex"] as? String, let txid = r["txid"] as? String,

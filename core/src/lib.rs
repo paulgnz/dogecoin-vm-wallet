@@ -16,7 +16,11 @@ use zeroize::Zeroizing;
 /// One koinu is 10^-8 DOGE.
 pub const KOINU: u64 = 100_000_000;
 /// Dogecoin's recommended wallet fee, 0.01 DOGE per kB, per byte.
-const FEE_PER_BYTE: u64 = 1_000;
+pub const FEE_PER_BYTE: u64 = 1_000;
+/// DogecoinVM's relay minimum, 0.001 DOGE per kB, per byte. Blocks there
+/// have room to spare, so the minimum always makes the next block; on
+/// Dogecoin, which can be busy, wallets pay the recommended rate.
+pub const VM_FEE_PER_BYTE: u64 = 100;
 /// Outputs below the soft dust limit cost that much again in fee.
 const SOFT_DUST: u64 = KOINU / 100;
 /// Outputs below the hard dust limit are not relayed.
@@ -61,7 +65,9 @@ fn check_encode(version: u8, payload: &[u8]) -> String {
 }
 
 fn check_decode(s: &str) -> Result<(u8, Vec<u8>)> {
-    let raw = bs58::decode(s.trim()).into_vec().map_err(|_| Error("not base58".into()))?;
+    let raw = bs58::decode(s.trim())
+        .into_vec()
+        .map_err(|_| Error("not base58".into()))?;
     if raw.len() < 5 {
         return err("too short");
     }
@@ -83,7 +89,11 @@ pub struct Versions {
     pub wif: u8,
 }
 
-pub const MAINNET: Versions = Versions { p2pkh: 30, p2sh: 22, wif: 158 };
+pub const MAINNET: Versions = Versions {
+    p2pkh: 30,
+    p2sh: 22,
+    wif: 158,
+};
 
 /// Where coins go: pay-to-public-key-hash (kind 0) or pay-to-script-hash (1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,7 +153,10 @@ pub struct Signers {
 
 impl Signers {
     fn multisig(&self) -> Result<Vec<u8>> {
-        if self.required < 1 || self.required as usize > self.public_keys.len() || self.public_keys.len() > 15 {
+        if self.required < 1
+            || self.required as usize > self.public_keys.len()
+            || self.public_keys.len() > 15
+        {
             return err("invalid signer set");
         }
         let mut s = vec![0x50 + self.required];
@@ -175,7 +188,11 @@ pub fn deposit_redeem_script(dest: &Destination, signers: &Signers) -> Result<Ve
 /// keys, so the wallet can check what the bridge says.
 pub fn deposit_address(dest: &Destination, signers: &Signers, v: Versions) -> Result<String> {
     let script = deposit_redeem_script(dest, signers)?;
-    Ok(Destination { kind: 1, hash: hash160(&script) }.address(v))
+    Ok(Destination {
+        kind: 1,
+        hash: hash160(&script),
+    }
+    .address(v))
 }
 
 /// The DVMO tag asking the bridge to pay a withdrawal to `dest` on Dogecoin.
@@ -240,7 +257,10 @@ impl Key {
     }
 
     pub fn destination(&self) -> Destination {
-        Destination { kind: 0, hash: hash160(&self.public_key()) }
+        Destination {
+            kind: 0,
+            hash: hash160(&self.public_key()),
+        }
     }
 
     pub fn wif(&self, v: Versions) -> Zeroizing<String> {
@@ -257,15 +277,23 @@ impl Key {
 pub fn parse_doge(s: &str) -> Result<u64> {
     let s = s.trim();
     let (whole, frac) = s.split_once('.').unwrap_or((s, ""));
-    if whole.is_empty() || whole.len() > 11 || frac.len() > 8
-        || !whole.bytes().all(|c| c.is_ascii_digit()) || !frac.bytes().all(|c| c.is_ascii_digit())
+    if whole.is_empty()
+        || whole.len() > 11
+        || frac.len() > 8
+        || !whole.bytes().all(|c| c.is_ascii_digit())
+        || !frac.bytes().all(|c| c.is_ascii_digit())
         || (s.contains('.') && frac.is_empty())
     {
         return err("enter an amount like 12.5");
     }
-    let whole: u64 = whole.parse().map_err(|_| Error("amount too large".into()))?;
+    let whole: u64 = whole
+        .parse()
+        .map_err(|_| Error("amount too large".into()))?;
     let frac: u64 = format!("{frac:0<8}").parse().expect("digits");
-    whole.checked_mul(KOINU).and_then(|w| w.checked_add(frac)).ok_or(Error("amount too large".into()))
+    whole
+        .checked_mul(KOINU)
+        .and_then(|w| w.checked_add(frac))
+        .ok_or(Error("amount too large".into()))
 }
 
 /// Formats koinu as DOGE, without trailing zeros.
@@ -337,12 +365,28 @@ impl Tx {
     /// spends, the others none.
     fn sighash(&self, index: usize, prev_script: &[u8]) -> [u8; 32] {
         let copy = Tx {
-            inputs: self.inputs.iter().enumerate().map(|(n, i)| TxIn {
-                txid: i.txid,
-                vout: i.vout,
-                script: if n == index { prev_script.to_vec() } else { Vec::new() },
-            }).collect(),
-            outputs: self.outputs.iter().map(|o| TxOut { value: o.value, script: o.script.clone() }).collect(),
+            inputs: self
+                .inputs
+                .iter()
+                .enumerate()
+                .map(|(n, i)| TxIn {
+                    txid: i.txid,
+                    vout: i.vout,
+                    script: if n == index {
+                        prev_script.to_vec()
+                    } else {
+                        Vec::new()
+                    },
+                })
+                .collect(),
+            outputs: self
+                .outputs
+                .iter()
+                .map(|o| TxOut {
+                    value: o.value,
+                    script: o.script.clone(),
+                })
+                .collect(),
         };
         let mut data = copy.serialize();
         data.extend_from_slice(&1u32.to_le_bytes());
@@ -360,14 +404,30 @@ pub fn txid(raw: &[u8]) -> String {
 /// Reads the outputs of a legacy transaction.
 fn parse_outputs(raw: &[u8]) -> Result<Vec<TxOut>> {
     let mut i = 4usize;
-    let need = |i: usize, n: usize| if i + n > raw.len() { err("truncated transaction") } else { Ok(()) };
+    let need = |i: usize, n: usize| {
+        if i + n > raw.len() {
+            err("truncated transaction")
+        } else {
+            Ok(())
+        }
+    };
     let read_varint = |i: &mut usize| -> Result<usize> {
         need(*i, 1)?;
         let b = raw[*i];
         *i += 1;
         Ok(match b {
-            0xfd => { need(*i, 2)?; let v = u16::from_le_bytes([raw[*i], raw[*i + 1]]) as usize; *i += 2; v }
-            0xfe => { need(*i, 4)?; let v = u32::from_le_bytes(raw[*i..*i + 4].try_into().unwrap()) as usize; *i += 4; v }
+            0xfd => {
+                need(*i, 2)?;
+                let v = u16::from_le_bytes([raw[*i], raw[*i + 1]]) as usize;
+                *i += 2;
+                v
+            }
+            0xfe => {
+                need(*i, 4)?;
+                let v = u32::from_le_bytes(raw[*i..*i + 4].try_into().unwrap()) as usize;
+                *i += 4;
+                v
+            }
             0xff => return err("transaction too large"),
             b => b as usize,
         })
@@ -388,7 +448,10 @@ fn parse_outputs(raw: &[u8]) -> Result<Vec<TxOut>> {
         i += 8;
         let len = read_varint(&mut i)?;
         need(i, len)?;
-        outs.push(TxOut { value, script: raw[i..i + len].to_vec() });
+        outs.push(TxOut {
+            value,
+            script: raw[i..i + len].to_vec(),
+        });
         i += len;
     }
     Ok(outs)
@@ -425,7 +488,10 @@ pub struct Plan {
 impl Plan {
     /// The outputs, in order: (value, script).
     pub fn outputs(&self) -> Vec<(u64, Vec<u8>)> {
-        self.outputs.iter().map(|o| (o.value, o.script.clone())).collect()
+        self.outputs
+            .iter()
+            .map(|o| (o.value, o.script.clone()))
+            .collect()
     }
 }
 
@@ -434,7 +500,8 @@ impl Plan {
 /// maps each utxo's txid to the transaction's hex, from which each input's
 /// value and script are taken after checking the hex hashes to the txid:
 /// legacy signatures do not commit to the amounts they spend, so a server
-/// lying about a value could otherwise turn it into fee.
+/// lying about a value could otherwise turn it into fee. The fee is
+/// `fee_per_byte` koinu per byte, plus Dogecoin's dust surcharge.
 pub fn plan_payment(
     from_script: &[u8],
     utxos: &[Utxo],
@@ -442,9 +509,13 @@ pub fn plan_payment(
     script: &[u8],
     amount: u64,
     data: Option<&[u8]>,
+    fee_per_byte: u64,
 ) -> Result<Plan> {
     if amount < HARD_DUST {
-        return err(format!("the smallest payment is {} DOGE", format_doge(HARD_DUST)));
+        return err(format!(
+            "the smallest payment is {} DOGE",
+            format_doge(HARD_DUST)
+        ));
     }
     let from_hex = hex::encode(from_script);
     let mut spendable: Vec<(u64, &Utxo)> = utxos
@@ -455,9 +526,15 @@ pub fn plan_payment(
     // Largest first, by the server's claimed value (as chain.js does).
     spendable.sort_by(|a, b| b.0.cmp(&a.0));
 
-    let mut outputs = vec![TxOut { value: amount, script: script.to_vec() }];
+    let mut outputs = vec![TxOut {
+        value: amount,
+        script: script.to_vec(),
+    }];
     if let Some(d) = data {
-        outputs.push(TxOut { value: 0, script: [&[0x6a][..], &push_data(d)?].concat() });
+        outputs.push(TxOut {
+            value: 0,
+            script: [&[0x6a][..], &push_data(d)?].concat(),
+        });
     }
     let dust_fee = if amount < SOFT_DUST { SOFT_DUST } else { 0 };
 
@@ -465,13 +542,23 @@ pub fn plan_payment(
     let mut total = 0u64;
     let mut fee = 0u64;
     for (_, u) in spendable {
-        let raw = hex::decode(raw_txs.get(&u.txid).ok_or(Error(format!("no transaction {}", u.txid)))?)
-            .map_err(|_| Error("transaction is not hex".into()))?;
+        let raw = hex::decode(
+            raw_txs
+                .get(&u.txid)
+                .ok_or(Error(format!("no transaction {}", u.txid)))?,
+        )
+        .map_err(|_| Error("transaction is not hex".into()))?;
         if txid(&raw) != u.txid {
-            return err(format!("the server sent the wrong transaction for {}", u.txid));
+            return err(format!(
+                "the server sent the wrong transaction for {}",
+                u.txid
+            ));
         }
         let outs = parse_outputs(&raw)?;
-        let out = outs.get(u.vout as usize).ok_or(Error(format!("transaction {} has no output {}", u.txid, u.vout)))?;
+        let out = outs.get(u.vout as usize).ok_or(Error(format!(
+            "transaction {} has no output {}",
+            u.txid, u.vout
+        )))?;
         if out.script != from_script {
             return err(format!("output {}:{} is not yours", u.txid, u.vout));
         }
@@ -479,8 +566,9 @@ pub fn plan_payment(
         id.copy_from_slice(&hex::decode(&u.txid).map_err(|_| Error("bad txid".into()))?);
         inputs.push((id, u.vout, out.value));
         total += out.value;
-        let size = 10 + 149 * inputs.len() + 34 * (outputs.len() + 1) + data.map_or(0, |d| d.len() + 3);
-        fee = size as u64 * FEE_PER_BYTE + dust_fee;
+        let size =
+            10 + 149 * inputs.len() + 34 * (outputs.len() + 1) + data.map_or(0, |d| d.len() + 3);
+        fee = size as u64 * fee_per_byte + dust_fee;
         if total >= amount + fee {
             break;
         }
@@ -488,19 +576,32 @@ pub fn plan_payment(
     if total < amount + fee {
         return err(format!(
             "not enough confirmed DOGE: have {}, need {} including the fee",
-            format_doge(total), format_doge(amount + fee)
+            format_doge(total),
+            format_doge(amount + fee)
         ));
     }
     let change = total - amount - fee;
     if change >= SOFT_DUST {
-        outputs.push(TxOut { value: change, script: from_script.to_vec() });
+        outputs.push(TxOut {
+            value: change,
+            script: from_script.to_vec(),
+        });
     } else {
         fee += change;
     }
     if fee > MAX_FEE {
-        return err(format!("the fee would be {} DOGE; refusing to sign", format_doge(fee)));
+        return err(format!(
+            "the fee would be {} DOGE; refusing to sign",
+            format_doge(fee)
+        ));
     }
-    Ok(Plan { inputs, outputs, from_script: from_script.to_vec(), fee, total_in: total })
+    Ok(Plan {
+        inputs,
+        outputs,
+        from_script: from_script.to_vec(),
+        fee,
+        total_in: total,
+    })
 }
 
 /// Signs a plan with the key whose outputs it spends.
@@ -510,21 +611,42 @@ pub fn sign_plan(key: &Key, plan: &Plan) -> Result<Payment> {
         return err("this key does not own the plan's inputs");
     }
     let mut tx = Tx {
-        inputs: plan.inputs.iter().map(|(id, vout, _)| TxIn { txid: *id, vout: *vout, script: Vec::new() }).collect(),
-        outputs: plan.outputs.iter().map(|o| TxOut { value: o.value, script: o.script.clone() }).collect(),
+        inputs: plan
+            .inputs
+            .iter()
+            .map(|(id, vout, _)| TxIn {
+                txid: *id,
+                vout: *vout,
+                script: Vec::new(),
+            })
+            .collect(),
+        outputs: plan
+            .outputs
+            .iter()
+            .map(|o| TxOut {
+                value: o.value,
+                script: o.script.clone(),
+            })
+            .collect(),
     };
     let signing = key.signing_key();
     let public = key.public_key();
     for i in 0..tx.inputs.len() {
         let hash = tx.sighash(i, &from_script);
-        let sig: Signature = signing.sign_prehash(&hash).map_err(|e| Error(e.to_string()))?;
+        let sig: Signature = signing
+            .sign_prehash(&hash)
+            .map_err(|e| Error(e.to_string()))?;
         let sig = sig.normalize_s().unwrap_or(sig);
         let mut der = sig.to_der().as_bytes().to_vec();
         der.push(1); // SIGHASH_ALL
         tx.inputs[i].script = [push_data(&der)?, push_data(&public)?].concat();
     }
     let raw = tx.serialize();
-    Ok(Payment { txid: txid(&raw), hex: hex::encode(raw), fee: plan.fee })
+    Ok(Payment {
+        txid: txid(&raw),
+        hex: hex::encode(raw),
+        fee: plan.fee,
+    })
 }
 
 /// Plans and signs in one step.
@@ -535,14 +657,26 @@ pub fn build_payment(
     script: &[u8],
     amount: u64,
     data: Option<&[u8]>,
+    fee_per_byte: u64,
 ) -> Result<Payment> {
-    let plan = plan_payment(&key.destination().pk_script(), utxos, raw_txs, script, amount, data)?;
+    let plan = plan_payment(
+        &key.destination().pk_script(),
+        utxos,
+        raw_txs,
+        script,
+        amount,
+        data,
+        fee_per_byte,
+    )?;
     sign_plan(key, &plan)
 }
 
 /// A transaction's outputs, read back from its bytes: (value, script).
 pub fn decode_outputs(raw: &[u8]) -> Result<Vec<(u64, Vec<u8>)>> {
-    Ok(parse_outputs(raw)?.into_iter().map(|o| (o.value, o.script)).collect())
+    Ok(parse_outputs(raw)?
+        .into_iter()
+        .map(|o| (o.value, o.script))
+        .collect())
 }
 
 /// What an output script is, for showing to a person.
@@ -550,7 +684,10 @@ pub enum ScriptKind {
     Address(Destination),
     /// An OP_RETURN. A DVMO tag is a DogecoinVM withdrawal to a Dogecoin
     /// destination.
-    Data { bytes: Vec<u8>, withdrawal_to: Option<Destination> },
+    Data {
+        bytes: Vec<u8>,
+        withdrawal_to: Option<Destination>,
+    },
     Other,
 }
 
@@ -574,12 +711,19 @@ pub fn classify_script(script: &[u8]) -> ScriptKind {
             return ScriptKind::Other;
         }
         let bytes = script[start..].to_vec();
-        let withdrawal_to = (bytes.len() == 25 && &bytes[..4] == b"DVMO" && bytes[4] <= 1).then(|| {
-            let mut h = [0u8; 20];
-            h.copy_from_slice(&bytes[5..25]);
-            Destination { kind: bytes[4], hash: h }
-        });
-        return ScriptKind::Data { bytes, withdrawal_to };
+        let withdrawal_to =
+            (bytes.len() == 25 && &bytes[..4] == b"DVMO" && bytes[4] <= 1).then(|| {
+                let mut h = [0u8; 20];
+                h.copy_from_slice(&bytes[5..25]);
+                Destination {
+                    kind: bytes[4],
+                    hash: h,
+                }
+            });
+        return ScriptKind::Data {
+            bytes,
+            withdrawal_to,
+        };
     }
     ScriptKind::Other
 }
