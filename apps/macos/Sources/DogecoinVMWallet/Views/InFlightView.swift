@@ -37,7 +37,8 @@ struct InFlightView: View {
             default:
                 let left = max(d.required - d.confirmations, 0)
                 out.append(InFlightCard(id: d.id, title: title, progress: .blocks(d.confirmations, d.required),
-                                        detail: "\(d.confirmations) of \(d.required) confirmations. \(about(left)) left, then \(gets) DOGE arrives."))
+                                        detail: "\(d.confirmations) of \(d.required) confirmations. \(about(left)) left, then \(gets) DOGE arrives.",
+                                        quiet: quietNote))
             }
         }
 
@@ -49,7 +50,7 @@ struct InFlightView: View {
                 : "Waiting for it to be final on DogecoinVM, about two seconds."
             out.append(InFlightCard(id: w.txid, title: "Withdrawing \(formatDoge(Core.dogeText(UInt64(w.amount) ?? 0))) DOGE to Dogecoin",
                                     progress: .steps([("Final on DogecoinVM", final), ("Paid on Dogecoin", paid), ("In a Dogecoin block", false)]),
-                                    detail: detail))
+                                    detail: detail, quiet: paid ? quietNote : nil))
         }
 
         let depositTxids = Set(model.deposits.map(\.txid))
@@ -60,9 +61,18 @@ struct InFlightView: View {
             out.append(InFlightCard(id: o.txid,
                                     title: o.kind == "move" ? "Moving \(amount) DOGE to DogecoinVM" : "Sending \(amount) DOGE on Dogecoin",
                                     progress: .steps([("Sent", true), ("In a Dogecoin block", false)]),
-                                    detail: "Waiting for a Dogecoin block, usually within a minute.\(back)"))
+                                    detail: "Waiting for a Dogecoin block, usually within a minute.\(back)", quiet: quietNote))
         }
         return out
+    }
+
+    /// Dogecoin blocks come at random. When one is slow, say so rather than
+    /// leave a countdown that looks stuck.
+    private var quietNote: String? {
+        guard let t = model.status?.dogecoinBlockTime, t > 0 else { return nil }
+        let minutes = Int(Date().timeIntervalSince1970 - Double(t)) / 60
+        guard minutes >= 4 else { return nil }
+        return "Dogecoin hasn't found a block for \(minutes) minutes. Blocks average a minute but come at random; this continues when the next one arrives."
     }
 
     private func about(_ minutes: Int) -> String { minutes <= 1 ? "About a minute" : "About \(minutes) minutes" }
@@ -87,6 +97,7 @@ struct InFlightCard: View, Identifiable {
     var progress: Progress? = nil
     let detail: String
     var tint: Color = Theme.coin
+    var quiet: String? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -104,6 +115,9 @@ struct InFlightCard: View, Identifiable {
             case nil: EmptyView()
             }
             Text(detail).font(.callout).foregroundStyle(Theme.inkSoft).fixedSize(horizontal: false, vertical: true)
+            if let quiet {
+                Text(quiet).font(.callout).foregroundStyle(Theme.coinInk).fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)

@@ -63,6 +63,8 @@ struct BridgeStatus: Codable, Sendable {
     let dogecoinSync: Sync?
     let audit: Audit?
     let paused: Pause?
+    /// When the latest Dogecoin block was found, unix seconds.
+    let dogecoinBlockTime: Int?
 }
 
 struct Utxo: Codable, Sendable, Hashable {
