@@ -30,6 +30,7 @@ final class AppModel {
         address = UserDefaults.standard.string(forKey: "address")
         if address != nil && !Vault.hasKey { address = nil }
         loadWithdrawals()
+        loadOutgoing()
         Notifier.requestPermission()
         Task { await refreshLoop() }
         Task { await listenForBlocks() }
@@ -104,8 +105,12 @@ final class AppModel {
             return
         }
         guard let address else { return }
-        if let v = try? await api.address(address, on: .dogecoinvm) { vm = v }
+        if let v = try? await api.address(address, on: .dogecoinvm) {
+            vm = v
+            settle(.dogecoinvm, v.history)
+        }
         await refreshDogecoin(address)
+        if let d = doge { settle(.dogecoin, d.history) }
         if let d = try? await api.deposits(for: address) {
             deposits = d
             noticeDeposits()
@@ -159,6 +164,7 @@ final class AppModel {
         UserDefaults.standard.set(addr, forKey: "address")
         address = addr
         loadWithdrawals()
+        loadOutgoing()
         knownDepositStatus = nil
         Task { await refresh() }
     }
@@ -178,6 +184,7 @@ final class AppModel {
         doge = nil
         deposits = []
         withdrawals = []
+        outgoing = []
         knownDepositStatus = nil
     }
 
@@ -233,7 +240,9 @@ final class AppModel {
         guard let address, let view = network == .dogecoin ? doge : vm else {
             throw CoreError(message: "Your \(network.name) balance hasn't loaded yet.")
         }
-        let utxos = view.utxos.filter { $0.confirmations > 0 }
+        // Coins a payment still confirming already spends can't be spent again.
+        let inUse = Set(outgoing.filter { $0.network == network.rawValue }.flatMap(\.spent))
+        let utxos = view.utxos.filter { $0.confirmations > 0 && !inUse.contains("\($0.txid):\($0.vout)") }
         var raw: [String: String] = [:]
         for txid in Set(utxos.map(\.txid)) {
             raw[txid] = try await api.rawTx(txid, on: network)
@@ -258,7 +267,16 @@ final class AppModel {
             // Recorded before sending, so it is tracked even if the answer is lost.
             track(Withdrawal(txid: payment.txid, to: to, amount: String(p.koinu), time: Date(), status: "sending"))
         }
-        let txid = try await api.broadcast(payment.hex, on: p.network)
+        let change = signed.outputs.filter { $0.address == address }.reduce(UInt64(0)) { $0 + $1.value }
+        remember(Outgoing(txid: payment.txid, network: p.network.rawValue, kind: p.kind.name, to: p.withdrawalTo ?? p.to,
+                          amount: p.koinu, change: change, spent: signed.inputs, time: Date()))
+        let txid: String
+        do {
+            txid = try await api.broadcast(payment.hex, on: p.network)
+        } catch let e as APIError where e.status == 400 {
+            forget(payment.txid) // refused, so its coins are free again
+            throw e
+        }
         guard txid == payment.txid else {
             throw CoreError(message: "The bridge reported transaction \(txid), but this wallet signed \(payment.txid).")
         }
@@ -273,6 +291,63 @@ final class AppModel {
     /// a review.
     private(set) var depositAddress: String?
 
+    // MARK: Payments in flight
+
+    /// A payment this wallet sent, remembered until it confirms: the coins it
+    /// spends, so they aren't offered again, and its change, so a balance
+    /// that reads 0 while it confirms shows where the DOGE is.
+    struct Outgoing: Codable, Identifiable, Sendable {
+        let txid: String
+        let network: String     // Network.rawValue
+        let kind: String        // send, move or withdraw
+        let to: String
+        let amount: UInt64      // koinu
+        let change: UInt64      // koinu, back to this wallet
+        let spent: [String]     // txid:vout
+        let time: Date
+        var id: String { txid }
+    }
+
+    private(set) var outgoing: [Outgoing] = []
+
+    private var outgoingKey: String { "outgoing.\(address ?? "")" }
+
+    private func loadOutgoing() {
+        guard let data = UserDefaults.standard.data(forKey: outgoingKey),
+              let list = try? JSONDecoder().decode([Outgoing].self, from: data) else { outgoing = []; return }
+        outgoing = list
+    }
+
+    private func saveOutgoing() {
+        if let data = try? JSONEncoder().encode(Array(outgoing.prefix(50))) {
+            UserDefaults.standard.set(data, forKey: outgoingKey)
+        }
+    }
+
+    private func remember(_ o: Outgoing) {
+        outgoing.removeAll { $0.txid == o.txid }
+        outgoing.insert(o, at: 0)
+        saveOutgoing()
+    }
+
+    private func forget(_ txid: String) {
+        outgoing.removeAll { $0.txid == txid }
+        saveOutgoing()
+    }
+
+    /// Drops payments the chain now shows confirmed, or has never shown
+    /// after an hour (dropped by the network).
+    private func settle(_ network: Network, _ history: [HistoryEntry]) {
+        let seen = Dictionary(history.map { ($0.txid, $0.confirmations) }, uniquingKeysWith: { a, _ in a })
+        let before = outgoing.count
+        outgoing.removeAll { o in
+            guard o.network == network.rawValue else { return false }
+            if let conf = seen[o.txid] { return conf > 0 }
+            return Date().timeIntervalSince(o.time) > 3600
+        }
+        if outgoing.count != before { saveOutgoing() }
+    }
+
     // MARK: Withdrawals
 
     struct Withdrawal: Codable, Identifiable, Sendable {
@@ -283,7 +358,10 @@ final class AppModel {
         var status: String      // sending, pending, paid or unknown
         var pays: String?
         var paymentTxid: String?
+        var paymentConfirmations: Int?
         var id: String { txid }
+        /// Still to show in the in-flight panel: not yet in a Dogecoin block.
+        var inFlight: Bool { (paymentConfirmations ?? 0) == 0 && status != "unknown" }
     }
 
     private(set) var withdrawals: [Withdrawal] = []
@@ -311,14 +389,15 @@ final class AppModel {
     /// Checks each unpaid withdrawal with the bridge, and notifies when one
     /// is paid on Dogecoin.
     private func refreshWithdrawals() async {
-        for (i, w) in withdrawals.enumerated() where w.status != "paid" {
+        for (i, w) in withdrawals.enumerated() where w.status != "paid" || (w.paymentConfirmations ?? 0) == 0 {
             guard let s = try? await api.pegOut(w.txid) else { continue }
             var updated = w
             updated.status = s.status == "unknown" && w.status == "sending" ? "sending" : s.status
             updated.pays = s.pays
             updated.paymentTxid = s.paymentTxid
+            updated.paymentConfirmations = s.paymentConfirmations
             if i < withdrawals.count, withdrawals[i].txid == w.txid { withdrawals[i] = updated }
-            if s.status == "paid" {
+            if s.status == "paid" && w.status != "paid" {
                 Notifier.post(title: "Withdrawal paid",
                               body: "\(formatDoge(s.pays ?? "")) DOGE is on its way to \(w.to.prefix(8))… on Dogecoin.")
             }
@@ -344,7 +423,16 @@ final class AppModel {
 /// A payment prepared for review: what it will do, and everything needed to
 /// sign exactly that.
 struct PendingPayment: Identifiable, Sendable {
-    enum Kind: Sendable { case send, moveIn, withdraw }
+    enum Kind: Sendable {
+        case send, moveIn, withdraw
+        var name: String {
+            switch self {
+            case .send: "send"
+            case .moveIn: "move"
+            case .withdraw: "withdraw"
+            }
+        }
+    }
     let id = UUID()
     let kind: Kind
     let network: Network

@@ -69,10 +69,11 @@ enum Core {
         return PaymentPlan(outputs: outputs(r["outputs"]), fee: fee, totalIn: totalIn)
     }
 
-    /// Reads a signed transaction back: its id and outputs.
-    static func decodeTx(_ hex: String) throws -> (txid: String, outputs: [PlannedOutput]) {
+    /// Reads a signed transaction back: its id, the coins it spends
+    /// ("txid:vout") and its outputs.
+    static func decodeTx(_ hex: String) throws -> (txid: String, inputs: [String], outputs: [PlannedOutput]) {
         let r = try call(["op": "decodeTx", "hex": hex])
-        return (r["txid"] as? String ?? "", outputs(r["outputs"]))
+        return (r["txid"] as? String ?? "", r["inputs"] as? [String] ?? [], outputs(r["outputs"]))
     }
 
     private static func outputs(_ value: Any?) -> [PlannedOutput] {

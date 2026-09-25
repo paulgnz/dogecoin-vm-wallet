@@ -192,6 +192,7 @@ fn handle(req: Request) -> Result<Value> {
             let raw = hex::decode(h).map_err(|_| Error("transaction is not hex".into()))?;
             json!({
                 "txid": txid(&raw),
+                "inputs": decode_inputs(&raw)?.iter().map(|(id, vout)| format!("{id}:{vout}")).collect::<Vec<_>>(),
                 "outputs": decode_outputs(&raw)?.iter().map(|(val, s)| describe(*val, s, v)).collect::<Vec<_>>(),
             })
         }

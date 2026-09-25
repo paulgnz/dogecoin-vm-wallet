@@ -21,9 +21,11 @@ struct WalletView: View {
             }
 
             HStack(spacing: 12) {
-                BalanceTile(network: .dogecoin, amount: model.doge?.confirmed, note: model.dogeNote ?? pendingNote(model.doge))
-                BalanceTile(network: .dogecoinvm, amount: model.vm?.confirmed, note: pendingNote(model.vm))
+                BalanceTile(network: .dogecoin, amount: model.doge?.confirmed, note: model.dogeNote ?? pendingNote(model.doge, .dogecoin))
+                BalanceTile(network: .dogecoinvm, amount: model.vm?.confirmed, note: pendingNote(model.vm, .dogecoinvm))
             }
+
+            InFlightView()
 
             VStack(alignment: .leading, spacing: 12) {
                 Text("Send DOGE").font(.title2.bold())
@@ -53,9 +55,13 @@ struct WalletView: View {
         }
     }
 
-    private func pendingNote(_ view: AddressView?) -> String? {
+    private func pendingNote(_ view: AddressView?, _ network: Network) -> String? {
         guard let p = view?.pending, p != "0.00000000", p != "0" else { return nil }
-        return p.hasPrefix("-") ? "\(formatDoge(p)) DOGE leaving, waiting for a block" : "+\(formatDoge(p)) DOGE arriving, waiting for a block"
+        guard p.hasPrefix("-") else { return "+\(formatDoge(p)) DOGE arriving, waiting for a block" }
+        // Change from our own payments comes back when they confirm.
+        let change = model.outgoing.filter { $0.network == network.rawValue }.reduce(UInt64(0)) { $0 + $1.change }
+        let back = change > 0 ? "; \(formatDoge(Core.dogeText(change))) DOGE change comes back" : ""
+        return "\(formatDoge(p)) DOGE leaving\(back) when it confirms"
     }
 
     private func send() async {

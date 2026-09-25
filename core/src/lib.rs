@@ -403,6 +403,12 @@ pub fn txid(raw: &[u8]) -> String {
 
 /// Reads the outputs of a legacy transaction.
 fn parse_outputs(raw: &[u8]) -> Result<Vec<TxOut>> {
+    Ok(parse_tx(raw)?.1)
+}
+
+/// A transaction's inputs, as the (txid, vout) of each coin it spends, and
+/// its outputs.
+fn parse_tx(raw: &[u8]) -> Result<(Vec<(String, u32)>, Vec<TxOut>)> {
     let mut i = 4usize;
     let need = |i: usize, n: usize| {
         if i + n > raw.len() {
@@ -433,8 +439,13 @@ fn parse_outputs(raw: &[u8]) -> Result<Vec<TxOut>> {
         })
     };
     let inputs = read_varint(&mut i)?;
+    let mut spent = Vec::with_capacity(inputs);
     for _ in 0..inputs {
         need(i, 36)?;
+        let mut id = raw[i..i + 32].to_vec();
+        id.reverse();
+        let vout = u32::from_le_bytes(raw[i + 32..i + 36].try_into().unwrap());
+        spent.push((hex::encode(id), vout));
         i += 36;
         let len = read_varint(&mut i)?;
         need(i, len + 4)?;
@@ -454,7 +465,7 @@ fn parse_outputs(raw: &[u8]) -> Result<Vec<TxOut>> {
         });
         i += len;
     }
-    Ok(outs)
+    Ok((spent, outs))
 }
 
 /// An unspent output as the server lists it. Its value is only a claim: the
@@ -669,6 +680,11 @@ pub fn build_payment(
         fee_per_byte,
     )?;
     sign_plan(key, &plan)
+}
+
+/// The coins a transaction spends, read back from its bytes: (txid, vout).
+pub fn decode_inputs(raw: &[u8]) -> Result<Vec<(String, u32)>> {
+    Ok(parse_tx(raw)?.0)
 }
 
 /// A transaction's outputs, read back from its bytes: (value, script).

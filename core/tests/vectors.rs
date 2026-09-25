@@ -139,6 +139,12 @@ fn payments_match_byte_for_byte() {
         assert_eq!(got.hex, p.tx, "{}", p.name);
         assert_eq!(got.txid, p.txid, "{}", p.name);
         assert_eq!(got.fee.to_string(), p.fee, "{}", p.name);
+        // The coins it spends are read back correctly, and are all ones it was given.
+        let spent = decode_inputs(&hex::decode(&got.hex).unwrap()).unwrap();
+        assert!(!spent.is_empty(), "{}", p.name);
+        for (id, vout) in &spent {
+            assert!(p.utxos.iter().any(|u| &u.txid == id && u.vout as u32 == *vout), "{}: {id}:{vout}", p.name);
+        }
     }
 }
 

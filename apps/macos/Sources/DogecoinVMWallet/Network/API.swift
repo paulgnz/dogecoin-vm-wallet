@@ -106,6 +106,7 @@ struct PegOutStatus: Codable, Sendable {
     let status: String          // pending, paid or unknown
     let pays: String?
     let paymentTxid: String?
+    let paymentConfirmations: Int?   // the payout's, on Dogecoin
 }
 
 struct APIError: LocalizedError, Sendable {
