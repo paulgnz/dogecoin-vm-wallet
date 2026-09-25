@@ -32,18 +32,69 @@ final class AppModel {
         loadWithdrawals()
         Notifier.requestPermission()
         Task { await refreshLoop() }
+        Task { await listenForBlocks() }
     }
 
     // MARK: Refreshing
 
+    /// True while the event stream is connected. Blocks then drive the
+    /// refreshes, and the timer only keeps the status (a pause, sync
+    /// progress) current.
+    private var streaming = false
+
     private func refreshLoop() async {
         while true {
-            await refresh()
+            if streaming {
+                if let s = try? await api.status() { status = s }
+            } else {
+                await refresh()
+            }
             try? await Task.sleep(for: .seconds(15))
         }
     }
 
+    /// Listens for new blocks on either chain and refreshes at once. On
+    /// DogecoinVM a block is final once accepted, so a payment shows as soon
+    /// as it's final. Reconnects after 3 seconds if the stream drops.
+    private func listenForBlocks() async {
+        let url = server.appending(path: "api/events")
+        while true {
+            do {
+                var request = URLRequest(url: url)
+                request.timeoutInterval = 60 // the server pings every 25 seconds
+                let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                    throw URLError(.badServerResponse)
+                }
+                streaming = true
+                for try await line in bytes.lines where line.hasPrefix("data:") {
+                    await refresh()
+                }
+            } catch {}
+            streaming = false
+            try? await Task.sleep(for: .seconds(3))
+        }
+    }
+
+    private var refreshing = false
+    private var refreshAgain = false
+
+    /// Refreshes everything. Calls that arrive while one is running are
+    /// folded into a single follow-up, so a burst of events makes one pass.
     func refresh() async {
+        if refreshing {
+            refreshAgain = true
+            return
+        }
+        refreshing = true
+        defer { refreshing = false }
+        repeat {
+            refreshAgain = false
+            await refreshOnce()
+        } while refreshAgain
+    }
+
+    private func refreshOnce() async {
         do {
             if info == nil { info = try await api.info() }
             status = try await api.status()
